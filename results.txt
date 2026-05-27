@@ -1,0 +1,28 @@
+Surgical Skill Assessment — FCN Results (Ismail Fawaz et al., arXiv:1908.07319)
+Generated: 2026-05-26 17:52:00
+
+Dataset
+  Total trials: 39
+  Novice        : 19 trials
+  Intermediate  : 10 trials
+  Expert        : 10 trials
+
+LOSO Cross-Validation (Leave One Super-Trial Out)
+  Fold 1 ( 8 trials): 75.0%
+  Fold 2 ( 7 trials): 100.0%
+  Fold 3 ( 8 trials): 100.0%
+  Fold 4 ( 8 trials): 100.0%
+  Fold 5 ( 8 trials): 100.0%
+  Mean:              95.0%
+  Target (paper):    100%
+
+LOUO Cross-Validation (Leave One User Out)
+  Subject B - Novice         (5 trials): 40.0%
+  Subject C - Intermediate   (5 trials): 0.0%
+  Subject D - Expert         (5 trials): 0.0%
+  Subject E - Expert         (5 trials): 0.0%
+  Subject F - Intermediate   (5 trials): 0.0%
+  Subject G - Novice         (5 trials): 100.0%
+  Subject H - Novice         (4 trials): 75.0%
+  Subject I - Novice         (5 trials): 60.0%
+  Mean: 34.4%

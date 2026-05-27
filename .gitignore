@@ -1,0 +1,6 @@
+__pycache__/
+.venv/
+claude-planning/
+data/
+*.pdf
+n2v/
