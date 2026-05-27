@@ -4,3 +4,6 @@ claude-planning/
 data/
 *.pdf
 n2v/
+*.pth
+*.onnx
+*.onnx.data

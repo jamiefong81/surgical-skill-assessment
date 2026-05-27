@@ -32,6 +32,7 @@ torch.onnx.export(
     model,
     dummy,
     ONNX_PATH,
+    dynamo=False,          # force legacy TorchScript exporter so opset_version is honoured
     opset_version=13,
     input_names=['input'],
     output_names=['output'],
