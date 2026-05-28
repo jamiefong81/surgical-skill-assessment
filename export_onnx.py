@@ -13,23 +13,31 @@ import torch
 sys.path.insert(0, 'n2v')
 
 from model import SurgicalFCN
+from model_flat import SurgicalFCNFlat, verify_equivalence
 from n2v.utils.model_loader import load_onnx, get_model_summary
 
 ONNX_PATH = 'surgical_fcn.onnx'
 PTH_PATH = 'best_model.pth'
 NUM_CLASSES = 3
-DUMMY_TIMESTEPS = 500  # arbitrary fixed length for tracing; timestep axis is dynamic
+DUMMY_TIMESTEPS = 10   # must match T in generate_property.py
 
-# --- Section A: export to ONNX ---
+# --- Section A: build flat (verifier-friendly) model from trained weights ---
 
-model = SurgicalFCN(num_classes=NUM_CLASSES)
-model.load_state_dict(torch.load(PTH_PATH, map_location='cpu'))
-model.eval()
+trained = SurgicalFCN(num_classes=NUM_CLASSES)
+trained.load_state_dict(torch.load(PTH_PATH, map_location='cpu'))
+trained.eval()
+
+flat = SurgicalFCNFlat.from_trained(trained, T=DUMMY_TIMESTEPS)
+
+max_diff = verify_equivalence(trained, flat, T=DUMMY_TIMESTEPS)
+print(f'Equivalence verified: max |trained(x) - flat(x)| = {max_diff:.2e}')
+
+# --- Section B: export the flat model to ONNX ---
 
 dummy = torch.randn(1, 76, DUMMY_TIMESTEPS)
 
 torch.onnx.export(
-    model,
+    flat,
     dummy,
     ONNX_PATH,
     dynamo=False,          # force legacy TorchScript exporter so opset_version is honoured
@@ -37,18 +45,18 @@ torch.onnx.export(
     input_names=['input'],
     output_names=['output'],
     dynamic_axes={
-        'input':  {0: 'batch', 2: 'timesteps'},
+        'input':  {0: 'batch'},
         'output': {0: 'batch'},
     },
 )
 print(f'Exported to {ONNX_PATH}')
 
-# --- Section B: load via model_loader (onnx2torch.convert internally) ---
+# --- Section C: load via model_loader (onnx2torch.convert internally) ---
 
 onnx_model = load_onnx(ONNX_PATH)
 print('Loaded ONNX model via model_loader.load_onnx — all ops recognized by onnx2torch')
 
-# --- Section C: confirm all layers recognized via forward-pass hooks ---
+# --- Section D: confirm all layers recognized via forward-pass hooks ---
 
 summary = get_model_summary(onnx_model, input_shape=(76, DUMMY_TIMESTEPS))
 

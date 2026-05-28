@@ -7,3 +7,4 @@ n2v/
 *.pth
 *.onnx
 *.onnx.data
+*.vnnlib
