@@ -4,7 +4,7 @@ import numpy as np
 DATA_PATH = 'data/Suturing/kinematics/AllGestures/Suturing_D001.txt'
 VNNLIB_PATH = 'property_D001.vnnlib'
 EPSILON = 0.001
-T = 10
+T = 20   # must match DUMMY_TIMESTEPS in export_onnx.py
 TRUE_CLASS = 2
 
 # --- load data ---

@@ -10,6 +10,12 @@ LABEL_NAMES = {0: 'Novice', 1: 'Intermediate', 2: 'Expert'}
 BLOCK_REORDER = [0, 1, 2, 12, 13, 14, 15, 16, 17, 3, 4, 5, 6, 7, 8, 9, 10, 11, 18]
 BLOCK_SIZE = 19
 N_BLOCKS = 4
+N_OSATS = 6   # number of osats dimensions / regression outputs
+OSATS_NAMES = (
+    "respect for tissue", "suture/needle handling", "time and motion", 
+    "flow of operation", "overall performance", "quality of final product"
+)
+OSATS_COL_START = 3
 
 
 def reorder_columns(data):
@@ -74,6 +80,36 @@ def load_data(data_dir):
         subject = name[9]           # 'Suturing_B001' -> 'B'
         trial_num = int(name[10:])  # 'Suturing_B001' -> 1
         dataset.append((data, label, subject, trial_num))
+
+    return dataset
+
+
+def load_osats_data(data_dir):
+    suturing_dir = os.path.join(data_dir, "Suturing")
+    meta_path = os.path.join(suturing_dir, "meta_file_Suturing.txt")
+    kin_dir = os.path.join(suturing_dir, "kinematics", "AllGestures")
+
+    name_scores = {}  # trial name -> 6 scores
+    with open(meta_path, "r", encoding="utf-8") as f:
+        for line in f:
+            parts = line.split()
+            if not parts:
+                continue
+            name = parts[0]
+            scores = np.array(parts[OSATS_COL_START:OSATS_COL_START+6], dtype=np.float32)
+            name_scores[name] = scores
+
+    dataset = []
+    for name, scores in sorted(name_scores.items()):
+        kin_path = os.path.join(kin_dir, name + ".txt")
+        if not os.path.exists(kin_path):
+            print(f"Warning: kinematic file not found, skipping: {kin_path}")
+            continue
+        data = np.loadtxt(kin_path, dtype=np.float32)
+        data = reorder_columns(data)
+        subject = name[9]
+        trial_num = int(name[10:])
+        dataset.append((data, scores, subject, trial_num))
 
     return dataset
 

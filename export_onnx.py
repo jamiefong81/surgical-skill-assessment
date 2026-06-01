@@ -19,7 +19,7 @@ from n2v.utils.model_loader import load_onnx, get_model_summary
 ONNX_PATH = 'surgical_fcn.onnx'
 PTH_PATH = 'best_model.pth'
 NUM_CLASSES = 3
-DUMMY_TIMESTEPS = 10   # must match T in generate_property.py
+DUMMY_TIMESTEPS = 20   # must match T in generate_property.py
 
 # --- Section A: build flat (verifier-friendly) model from trained weights ---
 

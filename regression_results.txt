@@ -1,0 +1,21 @@
+Per-fold formal robustness verification — LOSO, held-out anchors
+(physical noise bound epsilon = 0.001)
+
+Fold | Expert | Novice |  v_expert |  v_novice |        C |        L
+--------------------------------------------------------------------
+1    | D001   | B001   |    3.0821 |    1.7392 |   2.2392 |   1.1252
+2    | D002   | B002   |    1.5634 |    0.5028 |   1.0028 |   1.0303
+3    | D003   | B003   |    0.4869 |    1.7504 |   2.2504 |   0.2369
+4    | D004   | B004   |    4.6241 |    0.7621 |   1.2621 |   0.8034
+5    | D005   | B005   |    0.0318 |    0.7216 |   1.2216 |  -0.2182
+
+Fold | noise   | mono    | seg     | range   |  eps[noise] |  eps[range]
+------------------------------------------------------------------------
+1    | unsat   | unsat   | unsat   | unsat   |    0.009937 |    0.025854
+2    | unsat   | unsat   | unsat   | unsat   |    0.011084 |    0.018555
+3    | unsat   | unsat   | unsat   | unsat   |    0.009448 |    0.008008
+4    | unsat   | unsat   | unsat   | unsat   |    0.013574 |    0.045068
+5    | unsat   | unsat   | unsat   | unsat   |    0.014624 |    0.015454
+
+certified eps[noise]: mean=0.011733  min=0.009448  max=0.014624  (mean = 11.7x physical)
+certified eps[range]: mean=0.022588  min=0.008008  max=0.045068  (mean = 22.6x physical)

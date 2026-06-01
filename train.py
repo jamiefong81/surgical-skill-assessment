@@ -1,14 +1,20 @@
 import copy
 import datetime
 import random
+import sys
 from collections import Counter
 
 import numpy as np
 import torch
 import torch.nn as nn
+from scipy.stats import spearmanr
 
-from dataset import load_data, get_loso_splits, get_louo_splits
+from dataset import load_data, load_osats_data, get_loso_splits, get_louo_splits
 from model import SurgicalFCN
+
+REGRESSION_CHECKPOINT = "best_model_regression.pth"
+REGRESSION_EPOCHS = 1000  # per paper
+REGRESSION_SEED = 42  # same as train_model
 
 
 def _to_tensor(data):
@@ -90,6 +96,64 @@ def train_model(train_data, num_classes=3, seed=42):
     return model
 
 
+def train_regression_model(train_data, num_outputs=6, seed=42,
+                           checkpoint_path=REGRESSION_CHECKPOINT, verbose=True):
+    torch.manual_seed(seed)
+    random.seed(seed)
+
+    indices = list(range(len(train_data)))
+    random.shuffle(indices)
+    n_val = max(1, int(0.1 * len(train_data)))
+    val_split = [train_data[i] for i in indices[:n_val]]
+    train_split = [train_data[i] for i in indices[n_val:]]
+
+    model = SurgicalFCN(num_classes=num_outputs)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=1e-3,
+        betas=(0.9, 0.999),
+        weight_decay=1e-5
+    )
+    criterion = nn.MSELoss()
+    best_val_loss = float('inf')
+    best_state = copy.deepcopy(model.state_dict())
+
+    for epoch in range(1, REGRESSION_EPOCHS + 1):
+        model.train()
+        random.shuffle(train_split)
+        train_loss = 0.0
+        for data, osats in train_split:
+            x = _to_tensor(data)
+            y = torch.tensor(osats, dtype=torch.float32).unsqueeze(0)
+            optimizer.zero_grad()
+            loss = criterion(model(x), y)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
+        train_loss /= len(train_split)
+
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for data, osats in val_split:
+                x = _to_tensor(data)
+                y = torch.tensor(osats, dtype=torch.float32).unsqueeze(0)
+                val_loss += criterion(model(x), y).item()
+        val_loss /= len(val_split)
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state = copy.deepcopy(model.state_dict())
+            torch.save(best_state, checkpoint_path)
+
+        if verbose and epoch % 100 == 0:
+            print(f'    Epoch {epoch:4d}: train_loss={train_loss:.4f}  val_loss={val_loss:.4f}')
+
+    model.load_state_dict(best_state)
+    return model
+
+
+
 def predict(model, data):
     """Predict the skill class for a single trial.
 
@@ -105,6 +169,12 @@ def predict(model, data):
         return model(_to_tensor(data)).argmax(dim=1).item()
 
 
+def predict_regression(model, data):
+    model.eval()
+    with torch.no_grad():
+        return model(_to_tensor(data)).squeeze(0).numpy()
+
+
 def evaluate_accuracy(model, test_data):
     """Compute classification accuracy over a list of trials.
 
@@ -117,6 +187,23 @@ def evaluate_accuracy(model, test_data):
     """
     correct = sum(predict(model, d) == l for d, l in test_data)
     return correct / len(test_data)
+
+
+def evaluate_regression(model, test_data):
+    all_abs = []
+    all_sq = []
+    for data, osats in test_data:
+        pred = predict_regression(model, data)
+        diff = pred - osats
+        all_abs.append(np.abs(diff))
+        all_sq.append(diff ** 2)
+    all_abs = np.stack(all_abs)  # (n_trials, 6)
+    all_sq = np.stack(all_sq)
+    return {
+        'mae': float(all_abs.mean()),
+        'mse': float(all_sq.mean()),
+        'mae_overall': float(all_abs[:, 4].mean()),
+    }
 
 
 def run_loso(dataset):
@@ -139,6 +226,88 @@ def run_loso(dataset):
     mean_acc = sum(accuracies) / len(accuracies)
     print(f'LOSO mean accuracy: {mean_acc:.1%}')
     return mean_acc
+
+
+OSATS_NAMES = [
+    "Respect for tissue", "Suture/needle handling", "Time and motion",
+    "Flow of operation", "Overall performance", "Quality of final product",
+]
+
+
+def mean_spearman(gt, pred):
+    """Mean Spearman's rho across the 6 OSATS targets, plus the per-target rhos.
+
+    Mirrors the paper's regression metric: compute rho for each of the six
+    predicted scores against ground truth, then average over the six.  A target
+    whose predictions or ground truth are constant (rho undefined) is skipped in
+    the mean and reported as nan.
+
+    Args:
+        gt:   (n_trials, 6) ground-truth OSATS scores.
+        pred: (n_trials, 6) predicted OSATS scores.
+
+    Returns:
+        (mean_rho, per_target_rho) where per_target_rho is a length-6 list.
+    """
+    per_target = []
+    for j in range(6):
+        rho, _ = spearmanr(gt[:, j], pred[:, j])
+        per_target.append(float(rho))
+    valid = [r for r in per_target if not np.isnan(r)]
+    mean_rho = float(np.mean(valid)) if valid else float('nan')
+    return mean_rho, per_target
+
+
+def run_loso_regression(dataset, num_outputs=6):
+    """Run 5-fold Leave-One-Super-Trial-Out CV for the OSATS regression model.
+
+    This is the regression analog of run_loso, following the paper, which uses a
+    LOSO scheme for both the classification and regression tasks.  Each fold
+    holds out all trials of one super-trial (trial number 1-5), trains a fresh
+    SurgicalFCN on the rest, and predicts the held-out trials.  Held-out
+    predictions are pooled across all five folds (each trial is predicted exactly
+    once) and scored with the paper's metric: mean Spearman's rho over the six
+    OSATS targets.  Per-fold checkpoints are saved as best_model_regression_fold{i}.pth
+    so each can be exported and formally verified downstream.
+
+    Args:
+        dataset:     output of load_osats_data — (data, scores, subject, trial_num).
+        num_outputs: number of OSATS targets (6).
+
+    Returns:
+        Dict with pooled 'mean_rho', 'per_target_rho', 'mae', and 'mae_overall'.
+    """
+    splits = get_loso_splits(dataset)  # yields (data, scores) pairs for regression
+    all_gt, all_pred = [], []
+    for i, (train, test) in enumerate(splits, 1):
+        ckpt = f'best_model_regression_fold{i}.pth'
+        print(f'LOSO-reg fold {i}/5 — training on {len(train)} trials '
+              f'(held-out super-trial {i}: {len(test)} trials)...')
+        model = train_regression_model(train, num_outputs, checkpoint_path=ckpt, verbose=False)
+
+        fold_gt = np.stack([o for _, o in test])
+        fold_pred = np.stack([predict_regression(model, d) for d, _ in test])
+        all_gt.append(fold_gt)
+        all_pred.append(fold_pred)
+
+        fold_mae = np.abs(fold_pred - fold_gt).mean()
+        print(f'  fold {i}: MAE={fold_mae:.4f}  (checkpoint -> {ckpt})')
+
+    gt = np.concatenate(all_gt)
+    pred = np.concatenate(all_pred)
+    mean_rho, per_target = mean_spearman(gt, pred)
+    mae = float(np.abs(pred - gt).mean())
+    mae_overall = float(np.abs(pred[:, 4] - gt[:, 4]).mean())
+
+    print('\nPooled held-out results (paper metric = mean Spearman rho):')
+    for name, rho in zip(OSATS_NAMES, per_target):
+        print(f'  rho[{name:<24}] = {rho:.3f}')
+    print(f'  mean rho (over 6 targets) = {mean_rho:.3f}   (paper Suturing FCN: 0.60)')
+    print(f'  MAE (all dims)            = {mae:.4f}')
+    print(f'  MAE (Overall Performance) = {mae_overall:.4f}')
+
+    return {'mean_rho': mean_rho, 'per_target_rho': per_target,
+            'mae': mae, 'mae_overall': mae_overall}
 
 
 def run_louo(dataset):
@@ -164,6 +333,27 @@ def run_louo(dataset):
 
 
 if __name__ == '__main__':
+    if '--regression' in sys.argv:
+        dataset = load_osats_data('data')
+
+        if '--single' in sys.argv:
+            # Non-paper shortcut: train one model on ALL trials (in-sample MAE).
+            # Kept only for quick experiments; does NOT follow the paper's LOSO.
+            train_data = [(d, o) for d, o, s, t in dataset]
+            print(f'[--single] Training one regression model on all {len(train_data)} trials...')
+            model = train_regression_model(train_data)
+            metrics = evaluate_regression(model, train_data)
+            print(f'In-sample MAE (all dims): {metrics["mae"]:.4f}')
+            print(f'In-sample MAE (Overall Performance): {metrics["mae_overall"]:.4f}')
+            print(f'Weights saved to {REGRESSION_CHECKPOINT}')
+            sys.exit(0)
+
+        # Paper-faithful default: LOSO cross-validation for the regression task.
+        print(f'Regression LOSO on {len(dataset)} Suturing trials '
+              f'(leave-one-super-trial-out, per paper)...\n')
+        run_loso_regression(dataset)
+        sys.exit(0)
+
     dataset = load_data('data')
 
     labels = [l for _, l, _, _ in dataset]
