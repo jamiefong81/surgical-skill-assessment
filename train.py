@@ -1,5 +1,4 @@
 import copy
-import datetime
 import os
 import random
 import sys
@@ -11,7 +10,7 @@ import torch.nn as nn
 from scipy.stats import spearmanr
 
 import config
-from dataset import load_data, load_osats_data, get_loso_splits, get_louo_splits
+from dataset import load_data, load_osats_data, get_loso_splits, get_louo_splits, LABEL_NAMES
 from model import SurgicalFCN
 
 REGRESSION_CHECKPOINT = os.path.join(config.MODEL_DIR, "best_model_regression.pth")
@@ -217,19 +216,23 @@ def run_loso(dataset):
         dataset: output of load_data.
 
     Returns:
-        Mean accuracy across all 5 folds as a float in [0, 1].
+        dict with 'mean_accuracy', 'fold_accuracies' (list) and 'fold_sizes'
+        (list) — the shape consumed by evaluate.save_results.
     """
     splits = get_loso_splits(dataset)
-    accuracies = []
+    fold_accuracies, fold_sizes = [], []
     for i, (train, test) in enumerate(splits, 1):
         print(f'LOSO fold {i}/5 — training on {len(train)} trials...')
         model = train_model(train)
         acc = evaluate_accuracy(model, test)
         print(f'Fold {i}: {len(test)} trials, accuracy={acc:.1%}')
-        accuracies.append(acc)
-    mean_acc = sum(accuracies) / len(accuracies)
+        fold_accuracies.append(acc)
+        fold_sizes.append(len(test))
+    mean_acc = sum(fold_accuracies) / len(fold_accuracies)
     print(f'LOSO mean accuracy: {mean_acc:.1%}')
-    return mean_acc
+    return {'mean_accuracy': mean_acc,
+            'fold_accuracies': fold_accuracies,
+            'fold_sizes': fold_sizes}
 
 
 OSATS_NAMES = [
@@ -321,19 +324,25 @@ def run_louo(dataset):
         dataset: output of load_data.
 
     Returns:
-        Mean accuracy across all 8 folds as a float in [0, 1].
+        dict with 'mean_accuracy', 'subject_accuracies', 'subject_sizes' and
+        'subject_labels' — the shape consumed by evaluate.save_results.
     """
     splits = get_louo_splits(dataset)
-    accuracies = []
+    subject_labels = {s: LABEL_NAMES[l] for _, l, s, _ in dataset}
+    subject_accuracies, subject_sizes = {}, {}
     for subject, train, test in splits:
         print(f'LOUO subject {subject} — training on {len(train)} trials...')
         model = train_model(train)
         acc = evaluate_accuracy(model, test)
         print(f'Subject {subject}: {len(test)} trials, accuracy={acc:.1%}')
-        accuracies.append(acc)
-    mean_acc = sum(accuracies) / len(accuracies)
+        subject_accuracies[subject] = acc
+        subject_sizes[subject] = len(test)
+    mean_acc = sum(subject_accuracies.values()) / len(subject_accuracies)
     print(f'LOUO mean accuracy: {mean_acc:.1%}')
-    return mean_acc
+    return {'mean_accuracy': mean_acc,
+            'subject_accuracies': subject_accuracies,
+            'subject_sizes': subject_sizes,
+            'subject_labels': subject_labels}
 
 
 if __name__ == '__main__':
@@ -368,15 +377,13 @@ if __name__ == '__main__':
         print(f'  {label_names[cls]}: {counts[cls]}')
     print()
 
-    loso_acc = run_loso(dataset)
+    loso_results = run_loso(dataset)
     print()
-    louo_acc = run_louo(dataset)
+    louo_results = run_louo(dataset)
 
-    timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    os.makedirs(config.RESULTS_DIR, exist_ok=True)
-    results_path = os.path.join(config.RESULTS_DIR, 'results.txt')
-    with open(results_path, 'w') as f:
-        f.write(f'Results — {timestamp}\n')
-        f.write(f'LOSO mean accuracy: {loso_acc:.1%}\n')
-        f.write(f'LOUO mean accuracy: {louo_acc:.1%}\n')
-    print(f'\nResults saved to {results_path}')
+    # Reuse the rich formatter so train.py and evaluate.py emit the identical
+    # results file (no more competing simple/rich versions clobbering each other).
+    # Imported here, not at module top, to avoid a train<->evaluate import cycle.
+    from evaluate import save_results
+    save_results(loso_results, louo_results)
+    print(f'\nResults saved to {os.path.join(config.RESULTS_DIR, "results.txt")}')
