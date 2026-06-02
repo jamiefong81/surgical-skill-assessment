@@ -8,16 +8,21 @@ Usage:
     python3 inspect_osats_prediction.py
 """
 
+import os
+
 import torch
 
+import config
 from dataset import load_osats_data
 from model_flat_regression import build_trainable_regression, build_flat_regression
 from generate_property_regression import (
     predict_overall, MARGIN_CEIL, MARGIN_FLOOR, DELTA, EXPERT_ANCHOR, NOVICE_ANCHOR
 )
 
-T             = 10
-PTH_PATH      = "best_model_regression.pth"
+T             = config.T_REGRESSION
+# Legacy single-model diagnostic. The all-data single model was retired in
+# favour of LOSO; point at fold 1's checkpoint so this still runs on a real model.
+PTH_PATH      = os.path.join(config.MODEL_DIR, "best_model_regression_fold1.pth")
 TARGET_OUTPUT = 4
 
 
@@ -34,7 +39,7 @@ def main():
     trained.eval()
     flat = build_flat_regression(trained, T)
 
-    trials = load_osats_data('data')
+    trials = load_osats_data()
 
     print(f"{'Trial':<22} {'Subj':<6} {'GT_Overall':>12} {'Pred_Overall':>14}")
     print('-' * 58)

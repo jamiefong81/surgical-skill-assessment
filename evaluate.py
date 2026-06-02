@@ -1,8 +1,10 @@
 import datetime
+import os
 from collections import Counter
 
 import torch
 
+import config
 from dataset import load_data, get_loso_splits, get_louo_splits
 from train import train_model, evaluate_accuracy
 
@@ -39,7 +41,7 @@ def print_dataset_summary(dataset):
           f'{n_intermediate} Intermediate, {n_expert} Expert')
 
 
-def save_results(loso_results, louo_results, filepath='results.txt'):
+def save_results(loso_results, louo_results, filepath=os.path.join(config.RESULTS_DIR, 'results.txt')):
     """Write a human-readable results file.
 
     Args:
@@ -48,7 +50,7 @@ def save_results(loso_results, louo_results, filepath='results.txt'):
         louo_results: dict with keys mean_accuracy (float), subject_accuracies
                       (dict subject→float), subject_sizes (dict subject→int),
                       subject_labels (dict subject→skill-level string).
-        filepath:     output path (default 'results.txt').
+        filepath:     output path (default 'results/results.txt').
     """
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -90,6 +92,7 @@ def save_results(loso_results, louo_results, filepath='results.txt'):
         lines.append(f'  Subject {s} - {label:<14} ({n} trials): {acc:.1%}')
     lines.append(f'  Mean: {louo_results["mean_accuracy"]:.1%}')
 
+    os.makedirs(os.path.dirname(filepath) or '.', exist_ok=True)
     with open(filepath, 'w') as f:
         f.write('\n'.join(lines) + '\n')
 
@@ -97,7 +100,7 @@ def save_results(loso_results, louo_results, filepath='results.txt'):
 if __name__ == '__main__':
     torch.manual_seed(42)
 
-    dataset = load_data('data')
+    dataset = load_data()
     print_dataset_summary(dataset)
     print()
     print('This will take a while — training 13 models (5 LOSO + 8 LOUO) each for up to 1000 epochs')
@@ -165,4 +168,4 @@ if __name__ == '__main__':
 
     save_results(loso_results, louo_results)
     print()
-    print('Results saved to results.txt')
+    print('Results saved to results/results.txt')

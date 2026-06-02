@@ -12,8 +12,8 @@ FOLDS="1 2 3 4 5"
 echo "=== Step 0: Check LOSO fold checkpoints ==="
 missing=0
 for i in $FOLDS; do
-    if [ ! -f "best_model_regression_fold${i}.pth" ]; then
-        echo "  MISSING: best_model_regression_fold${i}.pth"
+    if [ ! -f "models/best_model_regression_fold${i}.pth" ]; then
+        echo "  MISSING: models/best_model_regression_fold${i}.pth"
         missing=1
     fi
 done
@@ -31,10 +31,10 @@ done
 
 echo ""
 echo "=== Steps 2-4: Per-fold thresholds, fixed-epsilon verdicts, certified-epsilon search ==="
-echo "(generates property_*_fold{i}.vnnlib, verifies all four, binary-searches noise + range)"
+echo "(generates properties/property_*_fold{i}.vnnlib, verifies all four, binary-searches noise + range)"
 echo ""
 python3 generate_property_regression.py allfolds
 
 echo ""
-echo "Results written to regression_results.txt"
+echo "Results written to results/regression_results.txt"
 echo "Done."

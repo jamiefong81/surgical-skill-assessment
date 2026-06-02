@@ -7,19 +7,23 @@ Usage:
     2. python export_onnx.py    # export, load, verify
 """
 
+import os
 import sys
 import torch
 
-sys.path.insert(0, 'n2v')
+import config
+
+sys.path.insert(0, config.N2V_DIR)
 
 from model import SurgicalFCN
 from model_flat import SurgicalFCNFlat, verify_equivalence
 from n2v.utils.model_loader import load_onnx, get_model_summary
 
-ONNX_PATH = 'surgical_fcn.onnx'
-PTH_PATH = 'best_model.pth'
+os.makedirs(config.ONNX_DIR, exist_ok=True)
+ONNX_PATH = os.path.join(config.ONNX_DIR, 'surgical_fcn.onnx')
+PTH_PATH = os.path.join(config.MODEL_DIR, 'best_model.pth')
 NUM_CLASSES = 3
-DUMMY_TIMESTEPS = 20   # must match T in generate_property.py
+DUMMY_TIMESTEPS = config.T_CLASSIFICATION   # must match T in generate_property.py
 
 # --- Section A: build flat (verifier-friendly) model from trained weights ---
 

@@ -1,10 +1,13 @@
+import os
 import numpy as np
 
+import config
+
 # --- config ---
-DATA_PATH = 'data/Suturing/kinematics/AllGestures/Suturing_D001.txt'
-VNNLIB_PATH = 'property_D001.vnnlib'
+DATA_PATH = os.path.join(config.DATA_DIR, 'Suturing', 'kinematics', 'AllGestures', 'Suturing_D001.txt')
+VNNLIB_PATH = os.path.join(config.PROP_DIR, 'property_D001.vnnlib')
 EPSILON = 0.001
-T = 20   # must match DUMMY_TIMESTEPS in export_onnx.py
+T = config.T_CLASSIFICATION   # must match DUMMY_TIMESTEPS in export_onnx.py
 TRUE_CLASS = 2
 
 # --- load data ---
@@ -30,5 +33,6 @@ for i in range (len(x_star)):
 lines.append("(assert (or (<= Y_2 Y_0) (<= Y_2 Y_1)))")
 
 # --- write to file ---
+os.makedirs(os.path.dirname(VNNLIB_PATH), exist_ok=True)
 with open(VNNLIB_PATH, "w") as f:
     f.write("\n".join(lines) + "\n")

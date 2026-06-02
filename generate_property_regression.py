@@ -14,9 +14,10 @@ import sys
 import numpy as np
 import torch
 
+import config
 from dataset import load_osats_data
 
-T                = 10       # window length; must match export_onnx_regression.py
+T                = config.T_REGRESSION   # window length; shared via config
 N_INPUTS         = 760      # 76 channels * T
 N_OUTPUTS        = 6
 TARGET_OUTPUT    = 4        # index of Overall Performance in the OSATS vector
@@ -28,6 +29,12 @@ MARGIN_CEIL      = 0.5      # added to novice prediction to set ceiling C
 BOUNDARY_TIMESTEPS = (0, 1, 8, 9)
 EXPERT_SUBJECTS  = ('D', 'E')   # JIGSAWS self-proclaimed experts (>100h)
 
+# Artifact directories (root-anchored; see config.py).
+MODEL_DIR        = config.MODEL_DIR
+ONNX_DIR         = config.ONNX_DIR
+PROP_DIR         = config.PROP_DIR
+RESULTS_DIR      = config.RESULTS_DIR
+
 # --- Fold configuration (mutated by configure_fold) ---
 # Defaults target the legacy single all-data model so `generate`/`search` and
 # inspect_osats_prediction.py keep working unchanged. The per-fold pipeline
@@ -35,8 +42,8 @@ EXPERT_SUBJECTS  = ('D', 'E')   # JIGSAWS self-proclaimed experts (>100h)
 # and certificate refers to a trial the fold model was NOT trained on.
 EXPERT_ANCHOR    = "Suturing_D001"
 NOVICE_ANCHOR    = "Suturing_B001"
-ONNX_PATH        = "surgical_fcn_regression.onnx"
-CHECKPOINT       = "best_model_regression.pth"
+ONNX_PATH        = f"{ONNX_DIR}/surgical_fcn_regression.onnx"
+CHECKPOINT       = f"{MODEL_DIR}/best_model_regression.pth"
 HELDOUT_TRIAL    = None     # if set, the expert-floor set is restricted to held-out experts
 PROP_SUFFIX      = ""       # filename suffix for the generated .vnnlib files
 SEARCH_LO        = 0.0
@@ -46,7 +53,7 @@ SEARCH_HI        = 0.1      # 100x physical bound. Wide enough to resolve the ra
                            # the cgroup memory guard in run_verifier makes the larger
                            # probes safe (a blowup -> clean 'unknown' -> search narrows).
 SEARCH_ITERS     = 12       # resolves eps to ~1/4096 of the bracket
-RUN_INSTANCE     = "n2v/examples/VNN-COMP/run_instance.py"
+RUN_INSTANCE     = config.RUN_INSTANCE
 
 
 def configure_fold(fold):
@@ -65,10 +72,16 @@ def configure_fold(fold):
     global EXPERT_ANCHOR, NOVICE_ANCHOR, ONNX_PATH, CHECKPOINT, HELDOUT_TRIAL, PROP_SUFFIX
     EXPERT_ANCHOR = f"Suturing_D{fold:03d}"
     NOVICE_ANCHOR = f"Suturing_B{fold:03d}"
-    ONNX_PATH     = f"surgical_fcn_regression_fold{fold}.onnx"
-    CHECKPOINT    = f"best_model_regression_fold{fold}.pth"
+    ONNX_PATH     = f"{ONNX_DIR}/surgical_fcn_regression_fold{fold}.onnx"
+    CHECKPOINT    = f"{MODEL_DIR}/best_model_regression_fold{fold}.pth"
     HELDOUT_TRIAL = fold
     PROP_SUFFIX   = f"_fold{fold}"
+
+
+def prop_path(stem):
+    """Path to a generated property file for the current fold, e.g.
+    properties/property_noise_robustness_fold3.vnnlib."""
+    return f"{PROP_DIR}/property_{stem}{PROP_SUFFIX}.vnnlib"
 
 
 def load_anchor_window(anchor_name, T):
@@ -85,7 +98,7 @@ def load_anchor_window(anchor_name, T):
     Raises:
         ValueError: if anchor_name is not found in the dataset.
     """
-    trials = load_osats_data('data')
+    trials = load_osats_data()
     for data, osats, subject, trial_num in trials:
         name = f"Suturing_{subject}{trial_num:03d}"
         if name == anchor_name:
@@ -202,7 +215,7 @@ def compute_thresholds(flat_model, T):
     v_novice = predict_overall(flat_model, load_anchor_window(NOVICE_ANCHOR, T), T)[TARGET_OUTPUT]
     C = v_novice + MARGIN_CEIL
 
-    all_trials = load_osats_data('data')
+    all_trials = load_osats_data()
     expert_overall = [
         predict_overall(flat_model, data[:T].T.flatten(), T)[TARGET_OUTPUT]
         for data, osats, subject, trial_num in all_trials
@@ -242,12 +255,13 @@ def generate_all(flat_model, T):
     # expert) over both perturbation balls. (The 'ceiling' assertion's violation
     # is Y_4 >= L, so unsat == novice provably below the expert floor.)
     properties = [
-        (f'property_noise_robustness{PROP_SUFFIX}.vnnlib', 'noise',        EXPERT_ANCHOR, EPSILON_PHYSICAL, None,             'two_sided', (v_expert, delta)),
-        (f'property_monotonicity{PROP_SUFFIX}.vnnlib',     'monotonicity', NOVICE_ANCHOR, EPSILON_PHYSICAL, None,             'ceiling',   L),
-        (f'property_segmentation{PROP_SUFFIX}.vnnlib',     'segmentation', EXPERT_ANCHOR, EPSILON_PHYSICAL, EPSILON_BOUNDARY, 'two_sided', (v_expert, delta)),
-        (f'property_range_floor{PROP_SUFFIX}.vnnlib',      'range',        EXPERT_ANCHOR, EPSILON_PHYSICAL, None,             'floor',     L),
+        (prop_path('noise_robustness'), 'noise',        EXPERT_ANCHOR, EPSILON_PHYSICAL, None,             'two_sided', (v_expert, delta)),
+        (prop_path('monotonicity'),     'monotonicity', NOVICE_ANCHOR, EPSILON_PHYSICAL, None,             'ceiling',   L),
+        (prop_path('segmentation'),     'segmentation', EXPERT_ANCHOR, EPSILON_PHYSICAL, EPSILON_BOUNDARY, 'two_sided', (v_expert, delta)),
+        (prop_path('range_floor'),      'range',        EXPERT_ANCHOR, EPSILON_PHYSICAL, None,             'floor',     L),
     ]
 
+    os.makedirs(PROP_DIR, exist_ok=True)
     for filename, prop_name, anchor, eps, boundary_eps, assertion_kind, threshold in properties:
         text = build_property(prop_name, anchor, flat_model, T, eps, boundary_eps, assertion_kind, threshold)
         with open(filename, 'w') as f:
@@ -383,16 +397,17 @@ def binary_search_epsilon(flat_model, T, prop_name):
     """
     thresholds = compute_thresholds(flat_model, T)
     if prop_name == 'noise':
-        filename       = f'property_noise_robustness{PROP_SUFFIX}.vnnlib'
+        filename       = prop_path('noise_robustness')
         assertion_kind = 'two_sided'
         threshold      = (thresholds['v_expert'], thresholds['delta'])
         anchor         = EXPERT_ANCHOR
     else:  # range
-        filename       = f'property_range_floor{PROP_SUFFIX}.vnnlib'
+        filename       = prop_path('range_floor')
         assertion_kind = 'floor'
         threshold      = thresholds['L']
         anchor         = EXPERT_ANCHOR
 
+    os.makedirs(PROP_DIR, exist_ok=True)
     onnx_path = ONNX_PATH
     best = EPSILON_PHYSICAL if run_verifier(onnx_path, filename) == 'unsat' else 0.0
     lo, hi = SEARCH_LO, SEARCH_HI
@@ -434,10 +449,10 @@ def verdict_all(flat_model, T):
     """
     thresholds = generate_all(flat_model, T)
     files = [
-        ('noise',        f'property_noise_robustness{PROP_SUFFIX}.vnnlib'),
-        ('monotonicity', f'property_monotonicity{PROP_SUFFIX}.vnnlib'),
-        ('segmentation', f'property_segmentation{PROP_SUFFIX}.vnnlib'),
-        ('range',        f'property_range_floor{PROP_SUFFIX}.vnnlib'),
+        ('noise',        prop_path('noise_robustness')),
+        ('monotonicity', prop_path('monotonicity')),
+        ('segmentation', prop_path('segmentation')),
+        ('range',        prop_path('range_floor')),
     ]
     verdicts = {name: run_verifier(ONNX_PATH, path, flat_model, T) for name, path in files}
     return verdicts, thresholds
@@ -521,7 +536,8 @@ def write_results_table(results):
 
     text = "\n".join(lines)
     print("\n" + text)
-    with open('regression_results.txt', 'w') as f:
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    with open(f'{RESULTS_DIR}/regression_results.txt', 'w') as f:
         f.write(text + "\n")
 
 

@@ -1,6 +1,8 @@
 import os
 import numpy as np
 
+import config
+
 LABEL_MAP = {'N': 0, 'I': 1, 'E': 2}
 LABEL_NAMES = {0: 'Novice', 1: 'Intermediate', 2: 'Expert'}
 
@@ -37,7 +39,7 @@ def reorder_columns(data):
     return data[:, cols]
 
 
-def load_data(data_dir):
+def load_data(data_dir=config.DATA_DIR):
     """Load JIGSAWS Suturing kinematics and skill labels.
 
     Reads meta_file_Suturing.txt to determine which trials exist and their
@@ -47,7 +49,7 @@ def load_data(data_dir):
 
     Args:
         data_dir: path to the dataset root, the directory that contains the
-                  Suturing/ subdirectory (e.g. 'data').
+                  Suturing/ subdirectory (defaults to config.DATA_DIR).
 
     Returns:
         List of (data, label, subject, trial_num) tuples where:
@@ -84,7 +86,7 @@ def load_data(data_dir):
     return dataset
 
 
-def load_osats_data(data_dir):
+def load_osats_data(data_dir=config.DATA_DIR):
     suturing_dir = os.path.join(data_dir, "Suturing")
     meta_path = os.path.join(suturing_dir, "meta_file_Suturing.txt")
     kin_dir = os.path.join(suturing_dir, "kinematics", "AllGestures")
@@ -160,7 +162,7 @@ def get_louo_splits(dataset):
 
 
 if __name__ == '__main__':
-    dataset = load_data('data')
+    dataset = load_data()
 
     print(f'Total trials loaded: {len(dataset)}')
     print()

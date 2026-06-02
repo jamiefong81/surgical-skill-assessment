@@ -1,20 +1,24 @@
+import os
 import sys
 import torch
 
-sys.path.insert(0, 'n2v')
+import config
+
+sys.path.insert(0, config.N2V_DIR)
 
 # Optional positional arg: a LOSO fold index 1..5. When given, export that fold's
 # checkpoint to a fold-suffixed ONNX (matching configure_fold in
 # generate_property_regression.py). With no arg, export the legacy single model.
 FOLD = sys.argv[1] if len(sys.argv) > 1 else None
 if FOLD is not None:
-    ONNX_PATH = f"surgical_fcn_regression_fold{FOLD}.onnx"
-    PTH_PATH = f"best_model_regression_fold{FOLD}.pth"
+    ONNX_PATH = os.path.join(config.ONNX_DIR, f"surgical_fcn_regression_fold{FOLD}.onnx")
+    PTH_PATH = os.path.join(config.MODEL_DIR, f"best_model_regression_fold{FOLD}.pth")
 else:
-    ONNX_PATH = "surgical_fcn_regression.onnx"
-    PTH_PATH = "best_model_regression.pth"
+    ONNX_PATH = os.path.join(config.ONNX_DIR, "surgical_fcn_regression.onnx")
+    PTH_PATH = os.path.join(config.MODEL_DIR, "best_model_regression.pth")
+os.makedirs(config.ONNX_DIR, exist_ok=True)
 NUM_OUTPUTS = 6
-DUMMY_TIMESTEPS = 10  # must be same in generate_property_regression.py
+DUMMY_TIMESTEPS = config.T_REGRESSION  # shared via config
 OPSET_VERSION = 13
 
 from model import SurgicalFCN

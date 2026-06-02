@@ -1,5 +1,6 @@
 import copy
 import datetime
+import os
 import random
 import sys
 from collections import Counter
@@ -9,10 +10,11 @@ import torch
 import torch.nn as nn
 from scipy.stats import spearmanr
 
+import config
 from dataset import load_data, load_osats_data, get_loso_splits, get_louo_splits
 from model import SurgicalFCN
 
-REGRESSION_CHECKPOINT = "best_model_regression.pth"
+REGRESSION_CHECKPOINT = os.path.join(config.MODEL_DIR, "best_model_regression.pth")
 REGRESSION_EPOCHS = 1000  # per paper
 REGRESSION_SEED = 42  # same as train_model
 
@@ -87,7 +89,8 @@ def train_model(train_data, num_classes=3, seed=42):
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_state = copy.deepcopy(model.state_dict())
-            torch.save(best_state, 'best_model.pth')
+            os.makedirs(config.MODEL_DIR, exist_ok=True)
+            torch.save(best_state, os.path.join(config.MODEL_DIR, 'best_model.pth'))
 
         if epoch % 100 == 0:
             print(f'    Epoch {epoch:4d}: train_loss={train_loss:.4f}  val_loss={val_loss:.4f}')
@@ -144,6 +147,7 @@ def train_regression_model(train_data, num_outputs=6, seed=42,
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_state = copy.deepcopy(model.state_dict())
+            os.makedirs(os.path.dirname(checkpoint_path) or '.', exist_ok=True)
             torch.save(best_state, checkpoint_path)
 
         if verbose and epoch % 100 == 0:
@@ -280,7 +284,7 @@ def run_loso_regression(dataset, num_outputs=6):
     splits = get_loso_splits(dataset)  # yields (data, scores) pairs for regression
     all_gt, all_pred = [], []
     for i, (train, test) in enumerate(splits, 1):
-        ckpt = f'best_model_regression_fold{i}.pth'
+        ckpt = os.path.join(config.MODEL_DIR, f'best_model_regression_fold{i}.pth')
         print(f'LOSO-reg fold {i}/5 — training on {len(train)} trials '
               f'(held-out super-trial {i}: {len(test)} trials)...')
         model = train_regression_model(train, num_outputs, checkpoint_path=ckpt, verbose=False)
@@ -334,7 +338,7 @@ def run_louo(dataset):
 
 if __name__ == '__main__':
     if '--regression' in sys.argv:
-        dataset = load_osats_data('data')
+        dataset = load_osats_data()
 
         if '--single' in sys.argv:
             # Non-paper shortcut: train one model on ALL trials (in-sample MAE).
@@ -354,7 +358,7 @@ if __name__ == '__main__':
         run_loso_regression(dataset)
         sys.exit(0)
 
-    dataset = load_data('data')
+    dataset = load_data()
 
     labels = [l for _, l, _, _ in dataset]
     label_names = {0: 'Novice', 1: 'Intermediate', 2: 'Expert'}
@@ -369,8 +373,10 @@ if __name__ == '__main__':
     louo_acc = run_louo(dataset)
 
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    with open('results.txt', 'w') as f:
+    os.makedirs(config.RESULTS_DIR, exist_ok=True)
+    results_path = os.path.join(config.RESULTS_DIR, 'results.txt')
+    with open(results_path, 'w') as f:
         f.write(f'Results — {timestamp}\n')
         f.write(f'LOSO mean accuracy: {loso_acc:.1%}\n')
         f.write(f'LOUO mean accuracy: {louo_acc:.1%}\n')
-    print(f'\nResults saved to results.txt')
+    print(f'\nResults saved to {results_path}')
