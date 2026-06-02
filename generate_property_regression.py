@@ -6,6 +6,7 @@ Usage:
 """
 
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -233,12 +234,16 @@ def generate_all(flat_model, T):
     thresholds = compute_thresholds(flat_model, T)
     v_expert = thresholds['v_expert']
     delta    = thresholds['delta']
-    C        = thresholds['C']
     L        = thresholds['L']
 
+    # Monotonicity uses the expert floor L as the novice ceiling: proving the
+    # novice's Y_4 stays <= L while property #4 proves the expert's Y_4 stays
+    # >= L composes into a genuine skill-ordering certificate (novice <= L <=
+    # expert) over both perturbation balls. (The 'ceiling' assertion's violation
+    # is Y_4 >= L, so unsat == novice provably below the expert floor.)
     properties = [
         (f'property_noise_robustness{PROP_SUFFIX}.vnnlib', 'noise',        EXPERT_ANCHOR, EPSILON_PHYSICAL, None,             'two_sided', (v_expert, delta)),
-        (f'property_monotonicity{PROP_SUFFIX}.vnnlib',     'monotonicity', NOVICE_ANCHOR, EPSILON_PHYSICAL, None,             'ceiling',   C),
+        (f'property_monotonicity{PROP_SUFFIX}.vnnlib',     'monotonicity', NOVICE_ANCHOR, EPSILON_PHYSICAL, None,             'ceiling',   L),
         (f'property_segmentation{PROP_SUFFIX}.vnnlib',     'segmentation', EXPERT_ANCHOR, EPSILON_PHYSICAL, EPSILON_BOUNDARY, 'two_sided', (v_expert, delta)),
         (f'property_range_floor{PROP_SUFFIX}.vnnlib',      'range',        EXPERT_ANCHOR, EPSILON_PHYSICAL, None,             'floor',     L),
     ]
@@ -252,12 +257,70 @@ def generate_all(flat_model, T):
     return thresholds
 
 
-def run_verifier(onnx_path, vnnlib_path):
+def output_violation_predicate(vnnlib_path):
+    """Parse the Y_TARGET violation assertion from a VNN-LIB file.
+
+    Returns a callable ``y4 -> bool`` that is True when y4 satisfies the asserted
+    output violation (the point is a genuine counterexample on the output side),
+    or None if no Y_TARGET assertion is found. Handles the three forms we emit:
+        (assert (>= Y_4 t))                       -> y4 >= t
+        (assert (<= Y_4 t))                       -> y4 <= t
+        (assert (or (<= Y_4 a) (>= Y_4 b)))       -> y4 <= a or y4 >= b
+    Checks are strict (no slack), so a borderline witness is conservatively
+    rejected — the safe direction for trusting a 'sat'.
+    """
+    yvar = f"Y_{TARGET_OUTPUT}"
+    num = r'-?\d+\.?\d*(?:[eE][-+]?\d+)?'
+    for raw in open(vnnlib_path):
+        line = raw.strip()
+        if not line.startswith("(assert") or yvar not in line:
+            continue
+        nums = [float(n) for n in re.findall(num, line.replace(yvar, ''))]
+        if "(or" in line:
+            a, b = nums[0], nums[1]
+            return lambda y, a=a, b=b: (y <= a) or (y >= b)
+        if ">=" in line:
+            t = nums[0]
+            return lambda y, t=t: y >= t
+        if "<=" in line:
+            t = nums[0]
+            return lambda y, t=t: y <= t
+    return None
+
+
+def counterexample_is_real(stdout, vnnlib_path, flat_model, T):
+    """Re-evaluate a verifier-reported counterexample through the model.
+
+    Parses the ``(X_i value)`` block from the verifier's stdout, runs the flat
+    model on it, and checks the parsed output violation. Returns True only if the
+    witness genuinely violates the property — making a 'sat' sound regardless of
+    any over-approximation in the verifier (which is unsound for witness-free
+    'sat'). Returns False if the witness is missing, malformed, or non-violating.
+    """
+    pred = output_violation_predicate(vnnlib_path)
+    if pred is None:
+        return False
+    xs = {int(i): float(v)
+          for i, v in re.findall(r'\(X_(\d+)\s+(-?\d+\.?\d*(?:[eE][-+]?\d+)?)\)', stdout)}
+    if len(xs) < N_INPUTS:
+        return False
+    x = np.array([xs[i] for i in range(N_INPUTS)], dtype=np.float32)
+    y4 = predict_overall(flat_model, x, T)[TARGET_OUTPUT]
+    return bool(pred(y4))
+
+
+def run_verifier(onnx_path, vnnlib_path, flat_model=None, T=None):
     """Invoke the n2v verifier and return its verdict.
 
     Args:
         onnx_path:   path to the exported flat regression ONNX.
         vnnlib_path: path to the VNN-LIB property file.
+        flat_model:  if provided, a reported 'sat' is only accepted after its
+                     counterexample is re-evaluated through this model and shown
+                     to genuinely violate the property; otherwise it is
+                     downgraded to 'unknown'. This guards against an unsound
+                     witness-free 'sat' from the over-approximating reachability.
+        T:           window length (needed to reshape the counterexample).
 
     Returns:
         'unsat', 'sat', or 'unknown'.  Returns 'unknown' on crash or no match,
@@ -293,6 +356,8 @@ def run_verifier(onnx_path, vnnlib_path):
             if 'unsat' in line:
                 return 'unsat'
             if 'sat' in line:
+                if flat_model is not None and not counterexample_is_real(stdout, vnnlib_path, flat_model, T):
+                    return 'unknown'
                 return 'sat'
             if 'unknown' in line:
                 return 'unknown'
@@ -374,7 +439,7 @@ def verdict_all(flat_model, T):
         ('segmentation', f'property_segmentation{PROP_SUFFIX}.vnnlib'),
         ('range',        f'property_range_floor{PROP_SUFFIX}.vnnlib'),
     ]
-    verdicts = {name: run_verifier(ONNX_PATH, path) for name, path in files}
+    verdicts = {name: run_verifier(ONNX_PATH, path, flat_model, T) for name, path in files}
     return verdicts, thresholds
 
 
@@ -394,8 +459,9 @@ def run_fold(fold, T):
     flat = load_flat_model(T)
 
     verdicts, th = verdict_all(flat, T)
+    sep = "yes" if th['v_novice'] < th['L'] else "NO (novice >= floor)"
     print(f"    thresholds: v_expert={th['v_expert']:.4f}  v_novice={th['v_novice']:.4f}  "
-          f"C={th['C']:.4f}  L={th['L']:.4f}")
+          f"L={th['L']:.4f}  (novice<L for monotonicity: {sep})")
     print(f"    verdicts:   noise={verdicts['noise']}  monotonicity={verdicts['monotonicity']}  "
           f"segmentation={verdicts['segmentation']}  range={verdicts['range']}")
 
@@ -407,8 +473,7 @@ def run_fold(fold, T):
         'fold': fold,
         'expert_anchor': EXPERT_ANCHOR.replace('Suturing_', ''),
         'novice_anchor': NOVICE_ANCHOR.replace('Suturing_', ''),
-        'v_expert': th['v_expert'], 'v_novice': th['v_novice'],
-        'C': th['C'], 'L': th['L'],
+        'v_expert': th['v_expert'], 'v_novice': th['v_novice'], 'L': th['L'],
         'verdicts': verdicts,
         'eps_noise': eps_noise, 'eps_range': eps_range,
     }
@@ -423,12 +488,18 @@ def write_results_table(results):
     lines.append(f"(physical noise bound epsilon = {EPSILON_PHYSICAL})")
     lines.append("")
 
-    th_hdr = f"{'Fold':<4} | {'Expert':<6} | {'Novice':<6} | {'v_expert':>9} | {'v_novice':>9} | {'C':>8} | {'L':>8}"
+    lines.append("L = expert floor = monotonicity ceiling. Monotonicity (novice Y_4 <= L)")
+    lines.append("can only hold where v_novice < L; otherwise the novice already outscores")
+    lines.append("the expert floor and the property is correctly violated (sat).")
+    lines.append("")
+    th_hdr = (f"{'Fold':<4} | {'Expert':<6} | {'Novice':<6} | {'v_expert':>9} | {'v_novice':>9} | "
+              f"{'L':>8} | {'novice<L':>8}")
     lines.append(th_hdr)
     lines.append("-" * len(th_hdr))
     for r in results:
+        sep = 'yes' if r['v_novice'] < r['L'] else 'NO'
         lines.append(f"{r['fold']:<4} | {r['expert_anchor']:<6} | {r['novice_anchor']:<6} | "
-                     f"{r['v_expert']:>9.4f} | {r['v_novice']:>9.4f} | {r['C']:>8.4f} | {r['L']:>8.4f}")
+                     f"{r['v_expert']:>9.4f} | {r['v_novice']:>9.4f} | {r['L']:>8.4f} | {sep:>8}")
     lines.append("")
 
     v_hdr = (f"{'Fold':<4} | {'noise':<7} | {'mono':<7} | {'seg':<7} | {'range':<7} | "
