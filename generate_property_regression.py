@@ -17,8 +17,7 @@ import torch
 import config
 from dataset import load_osats_data
 
-T                = config.T_REGRESSION   # window length; shared via config
-N_INPUTS         = 760      # 76 channels * T
+T                = config.T_REGRESSION   # window length; overridden by --T flag in main()
 N_OUTPUTS        = 6
 TARGET_OUTPUT    = 4        # index of Overall Performance in the OSATS vector
 EPSILON_PHYSICAL = 0.001    # physically motivated da Vinci encoder noise bound
@@ -26,8 +25,9 @@ EPSILON_BOUNDARY = 0.01     # larger perturbation for segment-boundary timesteps
 DELTA            = 0.5      # allowed Y_4 deviation (half an OSATS rater point)
 MARGIN_FLOOR     = 0.25     # subtracted from min expert prediction to set floor L
 MARGIN_CEIL      = 0.5      # added to novice prediction to set ceiling C
-BOUNDARY_TIMESTEPS = (0, 1, 8, 9)
+# BOUNDARY_TIMESTEPS and N_INPUTS are computed from T at runtime (first 2 / last 2 timesteps)
 EXPERT_SUBJECTS  = ('D', 'E')   # JIGSAWS self-proclaimed experts (>100h)
+APPROX_ONLY      = False    # set True via --approx to skip exact-star escalation
 
 # Artifact directories (root-anchored; see config.py).
 MODEL_DIR        = config.MODEL_DIR
@@ -72,10 +72,12 @@ def configure_fold(fold):
     global EXPERT_ANCHOR, NOVICE_ANCHOR, ONNX_PATH, CHECKPOINT, HELDOUT_TRIAL, PROP_SUFFIX
     EXPERT_ANCHOR = f"Suturing_D{fold:03d}"
     NOVICE_ANCHOR = f"Suturing_B{fold:03d}"
-    ONNX_PATH     = f"{ONNX_DIR}/surgical_fcn_regression_fold{fold}.onnx"
+    t_suffix      = f"_T{T}" if T != config.T_REGRESSION else ""
+    approx_suffix = "_approx" if APPROX_ONLY else ""
+    ONNX_PATH     = f"{ONNX_DIR}/surgical_fcn_regression_fold{fold}{t_suffix}.onnx"
     CHECKPOINT    = f"{MODEL_DIR}/best_model_regression_fold{fold}.pth"
     HELDOUT_TRIAL = fold
-    PROP_SUFFIX   = f"_fold{fold}"
+    PROP_SUFFIX   = f"_fold{fold}{t_suffix}{approx_suffix}"
 
 
 def prop_path(stem):
@@ -167,18 +169,20 @@ def build_property(
     Returns:
         Full VNN-LIB property as a single newline-joined string.
     """
+    n_inputs = 76 * T
+    boundary_timesteps = (0, 1, T - 2, T - 1)
     x_star = load_anchor_window(anchor_name, T)
 
     lines = []
-    for i in range(N_INPUTS):
+    for i in range(n_inputs):
         lines.append(f"(declare-const X_{i} Real)")
     for i in range(N_OUTPUTS):
         lines.append(f"(declare-const Y_{i} Real)")
 
     if prop_name == 'segmentation':
-        eps_per_index = [boundary_eps if (i % T) in BOUNDARY_TIMESTEPS else eps for i in range(N_INPUTS)]
+        eps_per_index = [boundary_eps if (i % T) in boundary_timesteps else eps for i in range(n_inputs)]
     else:
-        eps_per_index = [eps] * N_INPUTS
+        eps_per_index = [eps] * n_inputs
 
     write_bounds(lines, x_star, eps_per_index)
 
@@ -314,11 +318,12 @@ def counterexample_is_real(stdout, vnnlib_path, flat_model, T):
     pred = output_violation_predicate(vnnlib_path)
     if pred is None:
         return False
+    n_inputs = 76 * T
     xs = {int(i): float(v)
           for i, v in re.findall(r'\(X_(\d+)\s+(-?\d+\.?\d*(?:[eE][-+]?\d+)?)\)', stdout)}
-    if len(xs) < N_INPUTS:
+    if len(xs) < n_inputs:
         return False
-    x = np.array([xs[i] for i in range(N_INPUTS)], dtype=np.float32)
+    x = np.array([xs[i] for i in range(n_inputs)], dtype=np.float32)
     y4 = predict_overall(flat_model, x, T)[TARGET_OUTPUT]
     return bool(pred(y4))
 
@@ -350,10 +355,13 @@ def run_verifier(onnx_path, vnnlib_path, flat_model=None, T=None):
         # the blowup from thrashing into swap before the kill. start_new_session
         # keeps systemd-run + python a single process group so the SIGKILL-on-
         # timeout path below tears down the whole group.
+        cmd = ['systemd-run', '--user', '--scope', '--quiet',
+               '-p', 'MemoryMax=5G', '-p', 'MemorySwapMax=0',
+               'python3', RUN_INSTANCE, onnx_path, vnnlib_path, '--workers', '1']
+        if APPROX_ONLY:
+            cmd.extend(['--category', 'collins_rul_cnn_2022'])
         proc = subprocess.Popen(
-            ['systemd-run', '--user', '--scope', '--quiet',
-             '-p', 'MemoryMax=5G', '-p', 'MemorySwapMax=0',
-             'python3', RUN_INSTANCE, onnx_path, vnnlib_path, '--workers', '1'],
+            cmd,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
             start_new_session=True,
         )
@@ -534,10 +542,13 @@ def write_results_table(results):
     lines.append(f"certified eps[range]: mean={statistics.mean(er):.6f}  min={min(er):.6f}  "
                  f"max={max(er):.6f}  (mean = {statistics.mean(er) / EPSILON_PHYSICAL:.1f}x physical)")
 
+    t_suffix = f"_T{T}" if T != config.T_REGRESSION else ""
+    approx_suffix = "_approx" if APPROX_ONLY else ""
+    out_path = f'{RESULTS_DIR}/regression_results{t_suffix}{approx_suffix}.txt'
     text = "\n".join(lines)
     print("\n" + text)
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    with open(f'{RESULTS_DIR}/regression_results.txt', 'w') as f:
+    with open(out_path, 'w') as f:
         f.write(text + "\n")
 
 
@@ -550,14 +561,26 @@ def main():
         generate          legacy: write the 4 files for the single all-data model
         search            legacy: binary-search the single all-data model
     """
-    mode = sys.argv[1] if len(sys.argv) > 1 else 'allfolds'
+    global T, APPROX_ONLY
+    args = sys.argv[1:]
+
+    # Extract --approx and --T N flags before positional mode parsing.
+    APPROX_ONLY = '--approx' in args
+    if APPROX_ONLY:
+        args.remove('--approx')
+    if '--T' in args:
+        idx = args.index('--T')
+        T = int(args[idx + 1])
+        args = args[:idx] + args[idx + 2:]
+
+    mode = args[0] if args else 'allfolds'
 
     if mode == 'allfolds':
         results = [run_fold(fold, T) for fold in range(1, 6)]
         write_results_table(results)
         return
     if mode == 'fold':
-        run_fold(int(sys.argv[2]), T)
+        run_fold(int(args[1]), T)
         return
 
     # Legacy single-model modes (operate on the configured defaults).

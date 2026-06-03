@@ -6,19 +6,23 @@ import config
 
 sys.path.insert(0, config.N2V_DIR)
 
-# Optional positional arg: a LOSO fold index 1..5. When given, export that fold's
-# checkpoint to a fold-suffixed ONNX (matching configure_fold in
-# generate_property_regression.py). With no arg, export the legacy single model.
+# Positional args:
+#   argv[1]: LOSO fold index 1..5 (optional; omit for the legacy single model)
+#   argv[2]: T (timesteps window, optional; defaults to config.T_REGRESSION=10)
+# When T differs from the default a _T{N} suffix is appended to the ONNX filename
+# so the new export never overwrites the existing T=10 file.
 FOLD = sys.argv[1] if len(sys.argv) > 1 else None
+T_OVERRIDE = int(sys.argv[2]) if len(sys.argv) > 2 else None
+DUMMY_TIMESTEPS = T_OVERRIDE if T_OVERRIDE is not None else config.T_REGRESSION
+T_SUFFIX = f"_T{DUMMY_TIMESTEPS}" if T_OVERRIDE is not None else ""
 if FOLD is not None:
-    ONNX_PATH = os.path.join(config.ONNX_DIR, f"surgical_fcn_regression_fold{FOLD}.onnx")
+    ONNX_PATH = os.path.join(config.ONNX_DIR, f"surgical_fcn_regression_fold{FOLD}{T_SUFFIX}.onnx")
     PTH_PATH = os.path.join(config.MODEL_DIR, f"best_model_regression_fold{FOLD}.pth")
 else:
-    ONNX_PATH = os.path.join(config.ONNX_DIR, "surgical_fcn_regression.onnx")
+    ONNX_PATH = os.path.join(config.ONNX_DIR, f"surgical_fcn_regression{T_SUFFIX}.onnx")
     PTH_PATH = os.path.join(config.MODEL_DIR, "best_model_regression.pth")
 os.makedirs(config.ONNX_DIR, exist_ok=True)
 NUM_OUTPUTS = 6
-DUMMY_TIMESTEPS = config.T_REGRESSION  # shared via config
 OPSET_VERSION = 13
 
 from model import SurgicalFCN
