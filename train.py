@@ -265,7 +265,7 @@ def mean_spearman(gt, pred):
     return mean_rho, per_target
 
 
-def run_loso_regression(dataset, num_outputs=6):
+def run_loso_regression(dataset, num_outputs=6, task='Suturing'):
     """Run 5-fold Leave-One-Super-Trial-Out CV for the OSATS regression model.
 
     This is the regression analog of run_loso, following the paper, which uses a
@@ -284,10 +284,13 @@ def run_loso_regression(dataset, num_outputs=6):
     Returns:
         Dict with pooled 'mean_rho', 'per_target_rho', 'mae', and 'mae_overall'.
     """
+    slug = config.task_slug(task)
+    task_infix = f'_{slug}' if slug else ''
+
     splits = get_loso_splits(dataset)  # yields (data, scores) pairs for regression
     all_gt, all_pred = [], []
     for i, (train, test) in enumerate(splits, 1):
-        ckpt = os.path.join(config.MODEL_DIR, f'best_model_regression_fold{i}.pth')
+        ckpt = os.path.join(config.MODEL_DIR, f'best_model_regression{task_infix}_fold{i}.pth')
         print(f'LOSO-reg fold {i}/5 — training on {len(train)} trials '
               f'(held-out super-trial {i}: {len(test)} trials)...')
         model = train_regression_model(train, num_outputs, checkpoint_path=ckpt, verbose=False)
@@ -346,8 +349,13 @@ def run_louo(dataset):
 
 
 if __name__ == '__main__':
+    task = 'Suturing'
+    if '--task' in sys.argv:
+        idx = sys.argv.index('--task')
+        task = sys.argv[idx + 1]
+
     if '--regression' in sys.argv:
-        dataset = load_osats_data()
+        dataset = load_osats_data(task=task)
 
         if '--single' in sys.argv:
             # Non-paper shortcut: train one model on ALL trials (in-sample MAE).
@@ -362,12 +370,12 @@ if __name__ == '__main__':
             sys.exit(0)
 
         # Paper-faithful default: LOSO cross-validation for the regression task.
-        print(f'Regression LOSO on {len(dataset)} Suturing trials '
+        print(f'Regression LOSO on {len(dataset)} {task} trials '
               f'(leave-one-super-trial-out, per paper)...\n')
-        run_loso_regression(dataset)
+        run_loso_regression(dataset, task=task)
         sys.exit(0)
 
-    dataset = load_data()
+    dataset = load_data(task=task)
 
     labels = [l for _, l, _, _ in dataset]
     label_names = {0: 'Novice', 1: 'Intermediate', 2: 'Expert'}

@@ -1,0 +1,24 @@
+Per-fold formal robustness verification — LOSO, held-out anchors
+(physical noise bound epsilon = 0.001)
+
+L = expert floor = monotonicity ceiling. Monotonicity (novice Y_4 <= L)
+can only hold where v_novice < L; otherwise the novice already outscores
+the expert floor and the property is correctly violated (sat).
+
+Fold | Expert | Novice |  v_expert |  v_novice |        L | novice<L
+--------------------------------------------------------------------
+1    | Needle_Passing_D001 | Needle_Passing_B001 |    1.6171 |    3.3419 |   0.5035 |       NO
+2    | Needle_Passing_D002 | Needle_Passing_B002 |    1.3711 |    2.7811 |   1.1211 |       NO
+3    | Needle_Passing_D003 | Needle_Passing_B003 |    1.5196 |    3.5011 |   1.2696 |       NO
+4    | Needle_Passing_D004 | Needle_Passing_B004 |    0.9987 |    1.6780 |   0.5741 |       NO
+5    | Needle_Passing_D005 | Needle_Passing_B005 |    1.1851 |    2.0945 |   0.9351 |       NO
+
+Fold | noise   | mono    | seg     | range   |  eps[noise] |  eps[range]
+------------------------------------------------------------------------
+1    | unsat   | sat     | unsat   | unsat   |     skipped |     skipped
+2    | unsat   | sat     | unsat   | unsat   |     skipped |     skipped
+3    | unsat   | sat     | unsat   | unsat   |     skipped |     skipped
+4    | unsat   | sat     | unsat   | unsat   |     skipped |     skipped
+5    | unsat   | sat     | unsat   | unsat   |     skipped |     skipped
+
+certified eps: binary search skipped (--no-search) — verdicts at physical epsilon only

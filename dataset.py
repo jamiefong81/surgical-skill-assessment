@@ -39,17 +39,17 @@ def reorder_columns(data):
     return data[:, cols]
 
 
-def load_data(data_dir=config.DATA_DIR):
-    """Load JIGSAWS Suturing kinematics and skill labels.
+def load_data(task='Suturing', data_dir=config.DATA_DIR):
+    """Load JIGSAWS kinematics and skill labels for a given task.
 
-    Reads meta_file_Suturing.txt to determine which trials exist and their
-    labels, then loads each corresponding kinematic .txt file from
-    Suturing/kinematics/AllGestures/.  Column reordering is applied via
-    reorder_columns before the array is stored.
+    Reads meta_file_{task}.txt to determine which trials exist and their
+    labels, then loads each corresponding kinematic .txt file.  Column
+    reordering is applied via reorder_columns before the array is stored.
 
     Args:
-        data_dir: path to the dataset root, the directory that contains the
-                  Suturing/ subdirectory (defaults to config.DATA_DIR).
+        task:     JIGSAWS task name — 'Suturing', 'Knot_Tying', or
+                  'Needle_Passing' (default 'Suturing').
+        data_dir: path to the dataset root (defaults to config.DATA_DIR).
 
     Returns:
         List of (data, label, subject, trial_num) tuples where:
@@ -58,9 +58,9 @@ def load_data(data_dir=config.DATA_DIR):
           - subject   is a single-character string (e.g. 'B')
           - trial_num is an int (1–5)
     """
-    suturing_dir = os.path.join(data_dir, 'Suturing')
-    meta_path = os.path.join(suturing_dir, 'meta_file_Suturing.txt')
-    kin_dir = os.path.join(suturing_dir, 'kinematics', 'AllGestures')
+    task_dir  = os.path.join(data_dir, task)
+    meta_path = os.path.join(task_dir, f'meta_file_{task}.txt')
+    kin_dir   = os.path.join(task_dir, 'kinematics', 'AllGestures')
 
     label_dict = {}
     with open(meta_path) as f:
@@ -79,38 +79,50 @@ def load_data(data_dir=config.DATA_DIR):
             continue
         data = np.loadtxt(kin_path, dtype=np.float32)
         data = reorder_columns(data)
-        subject = name[9]           # 'Suturing_B001' -> 'B'
-        trial_num = int(name[10:])  # 'Suturing_B001' -> 1
+        trial_code = name.split('_')[-1]    # 'Knot_Tying_B001' -> 'B001'
+        subject    = trial_code[0]          # 'B001' -> 'B'
+        trial_num  = int(trial_code[1:])    # 'B001' -> 1
         dataset.append((data, label, subject, trial_num))
 
     return dataset
 
 
-def load_osats_data(data_dir=config.DATA_DIR):
-    suturing_dir = os.path.join(data_dir, "Suturing")
-    meta_path = os.path.join(suturing_dir, "meta_file_Suturing.txt")
-    kin_dir = os.path.join(suturing_dir, "kinematics", "AllGestures")
+def load_osats_data(task='Suturing', data_dir=config.DATA_DIR):
+    """Load JIGSAWS kinematics and OSATS regression scores for a given task.
 
-    name_scores = {}  # trial name -> 6 scores
-    with open(meta_path, "r", encoding="utf-8") as f:
+    Args:
+        task:     JIGSAWS task name (default 'Suturing').
+        data_dir: path to the dataset root (defaults to config.DATA_DIR).
+
+    Returns:
+        List of (data, scores, subject, trial_num) tuples where scores is a
+        float32 array of length 6 (the six OSATS sub-scores).
+    """
+    task_dir  = os.path.join(data_dir, task)
+    meta_path = os.path.join(task_dir, f'meta_file_{task}.txt')
+    kin_dir   = os.path.join(task_dir, 'kinematics', 'AllGestures')
+
+    name_scores = {}
+    with open(meta_path, 'r', encoding='utf-8') as f:
         for line in f:
             parts = line.split()
             if not parts:
                 continue
-            name = parts[0]
-            scores = np.array(parts[OSATS_COL_START:OSATS_COL_START+6], dtype=np.float32)
+            name   = parts[0]
+            scores = np.array(parts[OSATS_COL_START:OSATS_COL_START + 6], dtype=np.float32)
             name_scores[name] = scores
 
     dataset = []
     for name, scores in sorted(name_scores.items()):
-        kin_path = os.path.join(kin_dir, name + ".txt")
+        kin_path = os.path.join(kin_dir, name + '.txt')
         if not os.path.exists(kin_path):
-            print(f"Warning: kinematic file not found, skipping: {kin_path}")
+            print(f'Warning: kinematic file not found, skipping: {kin_path}')
             continue
         data = np.loadtxt(kin_path, dtype=np.float32)
         data = reorder_columns(data)
-        subject = name[9]
-        trial_num = int(name[10:])
+        trial_code = name.split('_')[-1]
+        subject    = trial_code[0]
+        trial_num  = int(trial_code[1:])
         dataset.append((data, scores, subject, trial_num))
 
     return dataset

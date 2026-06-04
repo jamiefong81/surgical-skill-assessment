@@ -34,3 +34,15 @@ RESULTS_DIR  = os.path.join(ROOT, "results")
 # property generation within each task.
 T_REGRESSION     = 10
 T_CLASSIFICATION = 20
+
+# All three JIGSAWS tasks supported by this pipeline.
+ALL_TASKS = ('Suturing', 'Knot_Tying', 'Needle_Passing')
+
+
+def task_slug(task):
+    """Short lowercase identifier used in filenames.
+
+    Suturing returns '' so all existing Suturing artifacts are untouched.
+    Other tasks return a compact slug: 'Knot_Tying' -> 'knottying'.
+    """
+    return '' if task == 'Suturing' else task.lower().replace('_', '')

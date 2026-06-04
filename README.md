@@ -3,9 +3,9 @@
 A faithful reproduction of **Ismail Fawaz et al., "Accurate and interpretable
 evaluation of surgical skills from kinematic data using fully convolutional
 neural networks"** (IJCARS 2019, DOI 10.1007/s11548-019-02039-4), extended with
-**formal robustness verification** of the OSATS regression model using two independent
-verifiers: **n2v** (Star-set reachability) and **alpha-beta-CROWN** (GPU-accelerated
-bound propagation).
+**formal robustness verification** of the OSATS regression model across all three
+JIGSAWS surgical tasks using two independent verifiers: **n2v** (Star-set
+reachability) and **alpha-beta-CROWN** (GPU-accelerated bound propagation).
 
 Target venue: **FORMATS / ARCH / SAIV workshop at CAV**.
 
@@ -13,12 +13,13 @@ Target venue: **FORMATS / ARCH / SAIV workshop at CAV**.
 
 ## Overview
 
-The base project trains the paper's **SurgicalFCN** on JIGSAWS Suturing kinematics
-and reproduces the paper's classification and regression results under both
+The base project trains the paper's **SurgicalFCN** on JIGSAWS kinematics and
+reproduces the paper's classification and regression results under both
 cross-validation schemes (LOSO and LOUO). The stretch goal formally certifies four
-robustness properties of the regression model across all five LOSO folds, using
-held-out trials as anchors so every certificate is a generalization claim rather than
-an in-sample one.
+robustness properties of the regression model across all five LOSO folds for all
+three JIGSAWS tasks (Suturing, Knot Tying, Needle Passing), using held-out trials
+as anchors so every certificate is a generalization claim rather than an in-sample
+one.
 
 ---
 
@@ -34,7 +35,7 @@ an in-sample one.
 ├── train.py                         # LOSO classification + regression training
 ├── evaluate.py                      # evaluation helpers and results formatter
 ├── export_onnx.py                   # export classification model to ONNX
-├── export_onnx_regression.py        # export regression fold models to ONNX (T-aware)
+├── export_onnx_regression.py        # export regression fold models to ONNX (task- and T-aware)
 ├── generate_property.py             # VNN-LIB property for classification model
 ├── generate_property_regression.py  # VNN-LIB properties + verification pipeline
 ├── inspect_osats_prediction.py      # quick per-trial prediction inspection
@@ -55,14 +56,16 @@ an in-sample one.
 ## Requirements
 
 ### Hardware
-- **GPU strongly recommended** for alpha-beta-CROWN (tested on RTX 4050 Laptop, 6 GB VRAM)
-- CPU-only works for n2v; alpha-beta-CROWN will fall back to CPU but is significantly slower
+- **CPU-only is sufficient** for training and n2v verification
+- **NVIDIA GPU recommended** for alpha-beta-CROWN (`--verifier abcrown`): `setup_abcrown.sh`
+  installs a CUDA 12.8 PyTorch wheel, which requires an NVIDIA GPU. Without one, change
+  `device: cuda` → `device: cpu` in `abcrown_config.yaml` — verification still works but
+  is significantly slower. AMD GPUs (ROCm) are not tested.
 
 ### Software
 - Python 3.12
 - PyTorch 2.12, NumPy 2.4, SciPy 1.17, ONNX 1.21 (see `requirements.txt`)
 - **For alpha-beta-CROWN only:** Python 3.11 (`sudo apt install python3.11 python3.11-venv`)
-- NVIDIA drivers with CUDA 12.8+ support
 
 ---
 
@@ -87,19 +90,27 @@ pip install -e n2v/
 
 ### 3. Get the JIGSAWS data
 
-Download the **Suturing** task kinematics from the
+Download the task kinematics from the
 [JIGSAWS dataset](https://cirl.lcsr.jhu.edu/research/hmm/datasets/jigsaws_release/)
-and place them at:
+and place them under `data/`. Each task follows the same layout:
 
 ```
 data/
-└── Suturing/
-    └── kinematics/
-        └── AllGestures/
-            ├── Suturing_B001.txt
-            ├── Suturing_B002.txt
-            ...
+├── Suturing/
+│   ├── meta_file_Suturing.txt
+│   └── kinematics/AllGestures/
+│       ├── Suturing_B001.txt  ...
+├── Knot_Tying/
+│   ├── meta_file_Knot_Tying.txt
+│   └── kinematics/AllGestures/
+│       ├── Knot_Tying_B001.txt  ...
+└── Needle_Passing/
+    ├── meta_file_Needle_Passing.txt
+    └── kinematics/AllGestures/
+        ├── Needle_Passing_B001.txt  ...
 ```
+
+Only the tasks you intend to train and verify need to be present.
 
 ### 4. (Optional) Install alpha-beta-CROWN for GPU-accelerated verification
 
@@ -119,45 +130,52 @@ not affected. Takes ~5 minutes on a good connection (~2 GB download).
 ### Step 1 — Train
 
 ```bash
-# Classification (LOSO + LOUO, ~13 models × 1000 epochs)
-python3 train.py
+# Classification (LOSO + LOUO, ~13 models × 1000 epochs each)
+python3 train.py [--task TASK]
 
 # Regression (LOSO, 5 fold models × 1000 epochs each)
-python3 train.py --regression
+python3 train.py --regression [--task TASK]
 ```
 
-Training results are written to `results/results.txt`. Fold checkpoints are saved to
-`models/best_model_regression_fold{1-5}.pth`.
+`TASK` is one of `Suturing` (default), `Knot_Tying`, or `Needle_Passing`.
+
+Classification results are written to `results/results.txt`. Regression fold
+checkpoints are saved to `models/best_model_regression[_{task}]_fold{1-5}.pth`
+(Suturing uses no task suffix for backward compatibility).
 
 ### Step 2 — Verify
 
 All verification goes through the unified entry point:
 
 ```bash
-bash verify.sh [--T N] [--method exact|approx] [--verifier n2v|abcrown] [--no-search]
+bash verify.sh [--task TASK] [--T N] [--method exact|approx] [--verifier n2v|abcrown] [--no-search]
 ```
 
 | Flag | Values | Default | Notes |
 |---|---|---|---|
+| `--task` | `Suturing`, `Knot_Tying`, `Needle_Passing` | `Suturing` | task to verify |
 | `--T N` | any integer | 10 | timestep window length |
 | `--method` | `exact`, `approx` | `exact` | n2v only; `approx` skips exact-star escalation |
 | `--verifier` | `n2v`, `abcrown` | `n2v` | requires `setup_abcrown.sh` for `abcrown` |
 | `--no-search` | flag | off | skip certified-ε binary search; emit verdicts only |
 
-Results land in `results/regression_results[_T{N}][_approx][_abcrown][_verdicts].txt`.
-No combination of flags overwrites another run's output.
+Results land in `results/regression_results[_{task}][_T{N}][_approx][_abcrown][_verdicts].txt`.
+No combination of flags ever overwrites another run's output.
 
 **Recommended runs in order:**
 
 ```bash
-# Baseline: n2v exact-star, T=10 (the primary result)
+# Baseline: n2v exact-star, T=10 (primary result for each task)
 bash verify.sh
+bash verify.sh --task Knot_Tying
+bash verify.sh --task Needle_Passing
 
-# Cross-check: abcrown verdicts at T=10 — should match baseline exactly
+# Cross-check with abcrown at T=10 — should match n2v verdicts exactly
 bash verify.sh --verifier abcrown --no-search
+bash verify.sh --task Knot_Tying --verifier abcrown --no-search
 
-# Higher T with abcrown
-bash verify.sh --verifier abcrown --T 70 --no-search
+# Higher T (abcrown scales where n2v approx-star cannot)
+bash verify.sh --task Knot_Tying --verifier abcrown --T 100 --no-search
 ```
 
 ---
@@ -181,13 +199,14 @@ Head:     Linear(32 → num_classes)                      [6 outputs for regress
 ```
 
 GAP makes the model **input-length agnostic** — full variable-length trials during
-training, fixed T-timestep windows during verification. This is why both tasks use the
-same architecture.
+training, fixed T-timestep windows during verification. The same architecture is
+used for all three tasks.
 
 **SurgicalFCNFlat** — mathematically equivalent reformulation using standard dense
 `Conv1d` / `Linear` layers with block-diagonal weights. Required for verification
 because n2v cannot handle the `Slice/Concat/ReduceMean` ops that the grouped
-architecture produces in ONNX.
+architecture produces in ONNX. Equivalence is verified on export
+(`max |trained(x) - flat(x)| < 1e-6`).
 
 ---
 
@@ -234,7 +253,7 @@ faster, especially for alpha-beta-CROWN).
 
 ## Results
 
-### Classification (LOSO — paper target: 100%)
+### Classification — Suturing (LOSO, paper target: 100%)
 
 | Fold | Trials | Accuracy |
 |---|---|---|
@@ -245,15 +264,23 @@ faster, especially for alpha-beta-CROWN).
 | 5 | 8 | 100.0% |
 | **Mean** | 39 | **95.0%** |
 
-LOUO mean: 34.4% (paper reports significant variation across subjects; see
-`results/results.txt` for per-subject breakdown).
+LOUO mean: 34.4% (see `results/results.txt` for per-subject breakdown).
 
-### Formal verification — n2v exact-star, T=10 (primary result)
+### Regression training — all three tasks
 
-`unsat` = property provably holds over the entire ε-ball. `sat` where `novice≥L`
-(folds 1, 3, 5) is the *correct* verdict — those folds' novice prediction at the
-first 10 timesteps already exceeds the expert floor, so the ordering property is
-genuinely violated in that window. Folds 2 and 4 certify all four properties.
+| | Suturing | Knot Tying | Needle Passing |
+|---|---|---|---|
+| Usable trials | 39 | 36 | 28 |
+| Mean Spearman ρ | ~0.60 (paper) | **0.661** | 0.405 |
+| ρ (Overall Performance, Y₄) | — | 0.704 | 0.364 |
+
+Knot Tying exceeds the paper's Suturing benchmark. Needle Passing is weaker due to
+only 21–23 training trials per fold; results should be interpreted accordingly.
+
+### Formal verification — Suturing (n2v exact-star, T=10)
+
+`unsat` = property provably holds. `sat` on monotonicity (folds 1, 3, 5) is
+correct — the novice prediction already exceeds the expert floor on those windows.
 
 ```
 Fold | noise   | mono    | seg     | range   | eps[noise]  | eps[range]
@@ -268,26 +295,42 @@ certified eps[noise]: mean=0.011733  (11.7× physical bound)
 certified eps[range]: mean=0.022588  (22.6× physical bound)
 ```
 
-### Cross-verification — alpha-beta-CROWN, T=10 and T=70
+### Formal verification — Knot Tying (abcrown, T=100)
 
-All 20 verdicts (5 folds × 4 properties) match n2v exactly at T=10. At T=70
-(where n2v approx-star returns all `unknown`), alpha-beta-CROWN still certifies
-noise, segmentation, and range as `unsat` across all folds:
+All four properties certified on all five folds — the strongest result across all
+three tasks. Monotonicity holds on every fold (`novice<L = yes` everywhere).
 
 ```
-T=70 verdicts (abcrown):
 Fold | noise   | mono    | seg     | range
--------------------------------------------
-1    | unsat   | sat     | unsat   | unsat
+1    | unsat   | unsat   | unsat   | unsat
 2    | unsat   | unsat   | unsat   | unsat
+3    | unsat   | unsat   | unsat   | unsat
+4    | unsat   | unsat   | unsat   | unsat
+5    | unsat   | unsat   | unsat   | unsat
+```
+
+### Formal verification — Needle Passing (abcrown, T=100)
+
+Noise, segmentation, and range certify on all five folds. Monotonicity is `sat`
+everywhere because the model predicts novices higher than experts on every fold —
+a correct verdict reflecting the weak model trained on only 28 trials.
+
+```
+Fold | noise   | mono    | seg     | range
+1    | unsat   | sat     | unsat   | unsat
+2    | unsat   | sat     | unsat   | unsat
 3    | unsat   | sat     | unsat   | unsat
 4    | unsat   | sat     | unsat   | unsat
 5    | unsat   | sat     | unsat   | unsat
 ```
 
-Timing: a single abcrown verification at T=20 takes ~18 s, at T=100 ~36 s — all
-resolved at "initial CROWN" without branch-and-bound, confirming that abcrown's
-bound propagation scales sub-linearly with T for this network.
+### Cross-verification — abcrown matches n2v at T=10
+
+All 20 verdicts (5 folds × 4 properties) for Suturing are identical between n2v
+exact-star (T=10) and alpha-beta-CROWN (T=10), providing independent confirmation.
+abcrown certifies at T=100 where n2v approx-star returns all `unknown`, with
+per-call wall time scaling sub-linearly (~18 s at T=20, ~36 s at T=100, all
+resolved at "initial CROWN" without branch-and-bound).
 
 ---
 
@@ -295,23 +338,29 @@ bound propagation scales sub-linearly with T for this network.
 
 **Why SurgicalFCNFlat?** n2v cannot handle the `Slice/Concat/ReduceMean` ONNX ops
 from the grouped architecture. `SurgicalFCNFlat` reformulates the same computation
-using only standard dense layers (block-diagonal weights), which n2v and abcrown both
-support. Equivalence is verified on export (`max |trained(x) - flat(x)| < 1e-6`).
+using only standard dense layers (block-diagonal weights), which both verifiers support.
 
 **Why LOSO for verification?** The paper uses LOSO for both tasks. Verifying each
 fold on held-out anchors means every certificate is a *generalization* claim — not
-in-sample fit. Anchors `D{fold}` (expert) and `B{fold}` (novice) are the trials
-that fold model never saw during training.
+in-sample fit. Anchors `D{fold}` (expert) and `B{fold}` (novice) are trials the
+fold model never saw during training.
 
-**Why two verifiers?** n2v exact-star is complete but memory-limited (OOM at T≳20).
-alpha-beta-CROWN uses tighter bound propagation (α-CROWN) with GPU acceleration;
-it certifies T=70+ properties that n2v cannot reach. Identical verdicts at T=10
-from two independent tools strengthen the paper's claims.
+**Why two verifiers?** n2v exact-star is sound and complete but memory-limited
+(OOM at T≳20). alpha-beta-CROWN uses tighter bound propagation (α-CROWN) with GPU
+acceleration; it certifies T=100+ windows that n2v cannot reach. Identical verdicts
+at T=10 from two independent tools strengthen the paper's claims.
 
 **Why an isolated venv for abcrown?** alpha-beta-CROWN requires Python 3.11 /
 PyTorch 2.8, conflicting with the project's Python 3.12 / PyTorch 2.12. A separate
 venv at `envs/abcrown/` isolates these dependencies. No activation switching is
-needed — `_run_abcrown()` calls `envs/abcrown/bin/python` by full path.
+needed at the shell level — `_run_abcrown()` calls `envs/abcrown/bin/python` by
+full path.
+
+**Why is Needle Passing monotonicity `sat` everywhere?** With only 28 usable trials
+(21–23 per training fold), the regression model fails to learn skill ordering and
+predicts novices above experts. The `sat` verdicts are correct — the verifier
+accurately reports the model's inverted rankings. This is a data-limitation of
+the Needle Passing task, not a pipeline failure.
 
 ---
 
@@ -320,12 +369,20 @@ needed — `_run_abcrown()` calls `envs/abcrown/bin/python` by full path.
 Result and property files are suffixed to prevent collisions:
 
 ```
-regression_results[_T{N}][_approx][_abcrown][_verdicts].txt
+regression_results[_{task}][_T{N}][_approx][_abcrown][_verdicts].txt
 
-regression_results.txt                    → T=10, n2v exact (primary)
-regression_results_T20_approx.txt         → T=20, n2v approx-only
-regression_results_abcrown_verdicts.txt   → T=10, abcrown, no search
-regression_results_T70_abcrown_verdicts.txt → T=70, abcrown, no search
+regression_results.txt                              → Suturing, T=10, n2v exact (primary)
+regression_results_knottying.txt                    → Knot Tying, T=10, n2v exact
+regression_results_needlepassing.txt                → Needle Passing, T=10, n2v exact
+regression_results_knottying_T100_abcrown_verdicts.txt  → Knot Tying, T=100, abcrown
+regression_results_T20_approx.txt                   → Suturing, T=20, n2v approx-only
+```
+
+Checkpoint naming follows the same convention:
+```
+best_model_regression_fold{i}.pth           → Suturing (backward compatible)
+best_model_regression_knottying_fold{i}.pth
+best_model_regression_needlepassing_fold{i}.pth
 ```
 
 ---

@@ -15,7 +15,7 @@ import numpy as np
 import torch
 
 import config
-from dataset import load_osats_data
+from dataset import load_osats_data, reorder_columns
 
 T                = config.T_REGRESSION   # window length; overridden by --T flag in main()
 N_OUTPUTS        = 6
@@ -29,7 +29,8 @@ MARGIN_CEIL      = 0.5      # added to novice prediction to set ceiling C
 EXPERT_SUBJECTS  = ('D', 'E')   # JIGSAWS self-proclaimed experts (>100h)
 APPROX_ONLY      = False    # set True via --approx to skip exact-star escalation
 ABCROWN          = False    # set True via --abcrown to use alpha-beta-CROWN instead of n2v
-RUN_SEARCH       = True      # set False via --no-search to skip the certified-eps binary search
+RUN_SEARCH       = True     # set False via --no-search to skip the certified-eps binary search
+TASK             = 'Suturing'  # overridden by --task flag in main()
 
 # Artifact directories (root-anchored; see config.py).
 MODEL_DIR        = config.MODEL_DIR
@@ -72,15 +73,17 @@ def configure_fold(fold):
         fold: super-trial index 1..5.
     """
     global EXPERT_ANCHOR, NOVICE_ANCHOR, ONNX_PATH, CHECKPOINT, HELDOUT_TRIAL, PROP_SUFFIX
-    EXPERT_ANCHOR = f"Suturing_D{fold:03d}"
-    NOVICE_ANCHOR = f"Suturing_B{fold:03d}"
+    slug            = config.task_slug(TASK)
+    task_infix      = f"_{slug}" if slug else ""
     t_suffix        = f"_T{T}" if T != config.T_REGRESSION else ""
     method_suffix   = "_approx" if APPROX_ONLY else ""
     verifier_suffix = "_abcrown" if ABCROWN else ""
-    ONNX_PATH     = f"{ONNX_DIR}/surgical_fcn_regression_fold{fold}{t_suffix}.onnx"
-    CHECKPOINT    = f"{MODEL_DIR}/best_model_regression_fold{fold}.pth"
+    EXPERT_ANCHOR = f"{TASK}_D{fold:03d}"
+    NOVICE_ANCHOR = f"{TASK}_B{fold:03d}"
+    ONNX_PATH     = f"{ONNX_DIR}/surgical_fcn_regression{task_infix}_fold{fold}{t_suffix}.onnx"
+    CHECKPOINT    = f"{MODEL_DIR}/best_model_regression{task_infix}_fold{fold}.pth"
     HELDOUT_TRIAL = fold
-    PROP_SUFFIX   = f"_fold{fold}{t_suffix}{method_suffix}{verifier_suffix}"
+    PROP_SUFFIX   = f"_fold{fold}{task_infix}{t_suffix}{method_suffix}{verifier_suffix}"
 
 
 def prop_path(stem):
@@ -103,12 +106,18 @@ def load_anchor_window(anchor_name, T):
     Raises:
         ValueError: if anchor_name is not found in the dataset.
     """
-    trials = load_osats_data()
-    for data, osats, subject, trial_num in trials:
-        name = f"Suturing_{subject}{trial_num:03d}"
-        if name == anchor_name:
-            return data[:T].T.flatten()
-    raise ValueError(f"Anchor trial {anchor_name!r} not found in dataset")
+    # Derive task from anchor name so this works for all three JIGSAWS tasks.
+    # 'Knot_Tying_D001' -> task='Knot_Tying', 'Suturing_D001' -> task='Suturing'
+    # Loading kinematics directly avoids a dependency on the OSATS meta file,
+    # which means anchors without OSATS scores (e.g. Needle_Passing_B005) work fine.
+    task     = '_'.join(anchor_name.split('_')[:-1])
+    kin_path = os.path.join(config.DATA_DIR, task, 'kinematics', 'AllGestures',
+                            anchor_name + '.txt')
+    if not os.path.exists(kin_path):
+        raise ValueError(f"Anchor kinematics not found: {kin_path}")
+    data = np.loadtxt(kin_path, dtype=np.float32)
+    data = reorder_columns(data)
+    return data[:T].T.flatten()
 
 
 def predict_overall(flat_model, x_star, T):
@@ -230,7 +239,7 @@ def compute_thresholds(flat_model, T):
     v_novice = predict_overall(flat_model, load_anchor_window(NOVICE_ANCHOR, T), T)[TARGET_OUTPUT]
     C = v_novice + MARGIN_CEIL
 
-    all_trials = load_osats_data()
+    all_trials = load_osats_data(task=TASK)
     expert_overall = [
         predict_overall(flat_model, data[:T].T.flatten(), T)[TARGET_OUTPUT]
         for data, osats, subject, trial_num in all_trials
@@ -570,8 +579,8 @@ def run_fold(fold, T):
 
     return {
         'fold': fold,
-        'expert_anchor': EXPERT_ANCHOR.replace('Suturing_', ''),
-        'novice_anchor': NOVICE_ANCHOR.replace('Suturing_', ''),
+        'expert_anchor': EXPERT_ANCHOR.split('_')[-1],
+        'novice_anchor': NOVICE_ANCHOR.split('_')[-1],
         'v_expert': th['v_expert'], 'v_novice': th['v_novice'], 'L': th['L'],
         'verdicts': verdicts,
         'eps_noise': eps_noise, 'eps_range': eps_range,
@@ -625,11 +634,13 @@ def write_results_table(results):
     else:
         lines.append("certified eps: binary search skipped (--no-search) — verdicts at physical epsilon only")
 
+    slug            = config.task_slug(TASK)
+    task_infix      = f"_{slug}" if slug else ""
     t_suffix        = f"_T{T}" if T != config.T_REGRESSION else ""
     method_suffix   = "_approx" if APPROX_ONLY else ""
     verifier_suffix = "_abcrown" if ABCROWN else ""
     search_suffix   = "" if searched else "_verdicts"
-    out_path = f'{RESULTS_DIR}/regression_results{t_suffix}{method_suffix}{verifier_suffix}{search_suffix}.txt'
+    out_path = f'{RESULTS_DIR}/regression_results{task_infix}{t_suffix}{method_suffix}{verifier_suffix}{search_suffix}.txt'
     text = "\n".join(lines)
     print("\n" + text)
     os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -646,7 +657,7 @@ def main():
         generate          legacy: write the 4 files for the single all-data model
         search            legacy: binary-search the single all-data model
     """
-    global T, APPROX_ONLY, ABCROWN, RUN_SEARCH
+    global T, APPROX_ONLY, ABCROWN, RUN_SEARCH, TASK
     args = sys.argv[1:]
 
     # Extract flag arguments before positional mode parsing.
@@ -659,6 +670,10 @@ def main():
     if '--no-search' in args:
         RUN_SEARCH = False
         args.remove('--no-search')
+    if '--task' in args:
+        idx = args.index('--task')
+        TASK = args[idx + 1]
+        args = args[:idx] + args[idx + 2:]
     if '--T' in args:
         idx = args.index('--T')
         T = int(args[idx + 1])

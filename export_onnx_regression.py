@@ -9,18 +9,24 @@ sys.path.insert(0, config.N2V_DIR)
 # Positional args:
 #   argv[1]: LOSO fold index 1..5 (optional; omit for the legacy single model)
 #   argv[2]: T (timesteps window, optional; defaults to config.T_REGRESSION=10)
-# When T differs from the default a _T{N} suffix is appended to the ONNX filename
-# so the new export never overwrites the existing T=10 file.
-FOLD = sys.argv[1] if len(sys.argv) > 1 else None
-T_OVERRIDE = int(sys.argv[2]) if len(sys.argv) > 2 else None
+#   argv[3]: task name (optional; defaults to 'Suturing')
+# A _T{N} suffix is appended when T differs from default; a task slug is prepended
+# for non-Suturing tasks — so no existing Suturing file is ever overwritten.
+FOLD            = sys.argv[1] if len(sys.argv) > 1 else None
+T_OVERRIDE      = int(sys.argv[2]) if len(sys.argv) > 2 else None
+TASK            = sys.argv[3] if len(sys.argv) > 3 else 'Suturing'
 DUMMY_TIMESTEPS = T_OVERRIDE if T_OVERRIDE is not None else config.T_REGRESSION
-T_SUFFIX = f"_T{DUMMY_TIMESTEPS}" if T_OVERRIDE is not None else ""
+T_SUFFIX        = f"_T{DUMMY_TIMESTEPS}" if T_OVERRIDE is not None else ""
+TASK_INFIX      = f"_{config.task_slug(TASK)}" if config.task_slug(TASK) else ""
 if FOLD is not None:
-    ONNX_PATH = os.path.join(config.ONNX_DIR, f"surgical_fcn_regression_fold{FOLD}{T_SUFFIX}.onnx")
-    PTH_PATH = os.path.join(config.MODEL_DIR, f"best_model_regression_fold{FOLD}.pth")
+    ONNX_PATH = os.path.join(config.ONNX_DIR,
+        f"surgical_fcn_regression{TASK_INFIX}_fold{FOLD}{T_SUFFIX}.onnx")
+    PTH_PATH  = os.path.join(config.MODEL_DIR,
+        f"best_model_regression{TASK_INFIX}_fold{FOLD}.pth")
 else:
-    ONNX_PATH = os.path.join(config.ONNX_DIR, f"surgical_fcn_regression{T_SUFFIX}.onnx")
-    PTH_PATH = os.path.join(config.MODEL_DIR, "best_model_regression.pth")
+    ONNX_PATH = os.path.join(config.ONNX_DIR,
+        f"surgical_fcn_regression{TASK_INFIX}{T_SUFFIX}.onnx")
+    PTH_PATH  = os.path.join(config.MODEL_DIR, "best_model_regression.pth")
 os.makedirs(config.ONNX_DIR, exist_ok=True)
 NUM_OUTPUTS = 6
 OPSET_VERSION = 13
@@ -78,4 +84,4 @@ if FOLD is None:
         print(f'{name:<35} {str(info["input_shape"]):<25} {str(info["output_shape"]):<25} {info["nb_params"]:>8}')
     print(f'\nTotal parameters across recognized layers: {total_params:,}')
 else:
-    print(f'  fold {FOLD}: {len(summary)} layers recognized, {total_params:,} params')
+    print(f'  {TASK} fold {FOLD}: {len(summary)} layers recognized, {total_params:,} params')
