@@ -1,0 +1,28 @@
+# alpha-beta-CROWN config for SurgicalFCN regression verification.
+#
+# Key differences from VNN-COMP benchmark configs:
+#   - alpha-crown bound propagation (tighter bounds than plain crown)
+#   - neuron branching, NOT input splitting
+#     (input_split is prohibitively slow at 76*T input dimensions;
+#      VNN-COMP benchmarks use it because their inputs are tiny, e.g. 5 for ACAS Xu)
+#   - GPU batch processing for the small SurgicalFCNFlat network
+
+general:
+  device: cuda
+  conv_mode: matrix     # required for Conv1d — patches mode only handles Conv2d
+
+solver:
+  batch_size: 2048
+  bound_prop_method: alpha-crown
+
+bab:
+  branching:
+    method: kfsb        # Key Feature Selection Branching — picks best neurons to split
+    candidates: 3
+    input_split:
+      enable: False     # branch on neurons, not input dimensions
+  timeout: 120
+
+attack:
+  pgd_order: before     # run PGD falsification before formal verification
+  pgd_restarts: 50

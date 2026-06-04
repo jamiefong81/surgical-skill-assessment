@@ -16,6 +16,14 @@ DATA_DIR     = os.path.join(ROOT, "data")
 N2V_DIR      = os.path.join(ROOT, "n2v")
 RUN_INSTANCE = os.path.join(N2V_DIR, "examples", "VNN-COMP", "run_instance.py")
 
+# alpha-beta-CROWN — lives in its own venv to isolate Python 3.11 / PyTorch 2.8
+# dependencies from the project venv. run_verifier() calls ABCROWN_PYTHON directly
+# so no environment activation is needed at the shell level.
+ABCROWN_DIR    = os.path.join(ROOT, "alpha-beta-CROWN")
+ABCROWN_PYTHON = os.path.join(ROOT, "envs", "abcrown", "bin", "python")
+ABCROWN_SCRIPT = os.path.join(ABCROWN_DIR, "complete_verifier", "abcrown.py")
+ABCROWN_CONFIG = os.path.join(ROOT, "abcrown_config.yaml")
+
 # Generated-artifact directories.
 MODEL_DIR    = os.path.join(ROOT, "models")
 ONNX_DIR     = os.path.join(ROOT, "onnx")

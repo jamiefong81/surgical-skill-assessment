@@ -28,6 +28,8 @@ MARGIN_CEIL      = 0.5      # added to novice prediction to set ceiling C
 # BOUNDARY_TIMESTEPS and N_INPUTS are computed from T at runtime (first 2 / last 2 timesteps)
 EXPERT_SUBJECTS  = ('D', 'E')   # JIGSAWS self-proclaimed experts (>100h)
 APPROX_ONLY      = False    # set True via --approx to skip exact-star escalation
+ABCROWN          = False    # set True via --abcrown to use alpha-beta-CROWN instead of n2v
+RUN_SEARCH       = True      # set False via --no-search to skip the certified-eps binary search
 
 # Artifact directories (root-anchored; see config.py).
 MODEL_DIR        = config.MODEL_DIR
@@ -72,12 +74,13 @@ def configure_fold(fold):
     global EXPERT_ANCHOR, NOVICE_ANCHOR, ONNX_PATH, CHECKPOINT, HELDOUT_TRIAL, PROP_SUFFIX
     EXPERT_ANCHOR = f"Suturing_D{fold:03d}"
     NOVICE_ANCHOR = f"Suturing_B{fold:03d}"
-    t_suffix      = f"_T{T}" if T != config.T_REGRESSION else ""
-    approx_suffix = "_approx" if APPROX_ONLY else ""
+    t_suffix        = f"_T{T}" if T != config.T_REGRESSION else ""
+    method_suffix   = "_approx" if APPROX_ONLY else ""
+    verifier_suffix = "_abcrown" if ABCROWN else ""
     ONNX_PATH     = f"{ONNX_DIR}/surgical_fcn_regression_fold{fold}{t_suffix}.onnx"
     CHECKPOINT    = f"{MODEL_DIR}/best_model_regression_fold{fold}.pth"
     HELDOUT_TRIAL = fold
-    PROP_SUFFIX   = f"_fold{fold}{t_suffix}{approx_suffix}"
+    PROP_SUFFIX   = f"_fold{fold}{t_suffix}{method_suffix}{verifier_suffix}"
 
 
 def prop_path(stem):
@@ -188,7 +191,15 @@ def build_property(
 
     if output_assertion_kind == 'two_sided':
         v, delta = threshold
-        lines.append(f"(assert (or (<= Y_{TARGET_OUTPUT} {v - delta:.8f}) (>= Y_{TARGET_OUTPUT} {v + delta:.8f})))")
+        lo = f"(<= Y_{TARGET_OUTPUT} {v - delta:.8f})"
+        hi = f"(>= Y_{TARGET_OUTPUT} {v + delta:.8f})"
+        if ABCROWN:
+            # alpha-beta-CROWN's read_vnnlib.py requires the strict VNN-COMP DNF
+            # form: each disjunct wrapped in (and ...). n2v accepts bare comparisons
+            # so its baseline files keep the simpler unwrapped form (left branch).
+            lines.append(f"(assert (or (and {lo}) (and {hi})))")
+        else:
+            lines.append(f"(assert (or {lo} {hi}))")
     elif output_assertion_kind == 'ceiling':
         lines.append(f"(assert (>= Y_{TARGET_OUTPUT} {threshold:.8f}))")
     elif output_assertion_kind == 'floor':
@@ -328,24 +339,113 @@ def counterexample_is_real(stdout, vnnlib_path, flat_model, T):
     return bool(pred(y4))
 
 
+def _run_n2v(onnx_path, vnnlib_path, flat_model, T):
+    """Invoke n2v and return 'unsat', 'sat', or 'unknown'."""
+    cmd = ['systemd-run', '--user', '--scope', '--quiet',
+           '-p', 'MemoryMax=5G', '-p', 'MemorySwapMax=0',
+           'python3', RUN_INSTANCE, onnx_path, vnnlib_path, '--workers', '1']
+    if APPROX_ONLY:
+        cmd.extend(['--category', 'collins_rul_cnn_2022'])
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, _ = proc.communicate(timeout=120)
+    except subprocess.TimeoutExpired:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        proc.communicate()
+        return 'unknown'
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        if 'unsat' in line:
+            return 'unsat'
+        if 'sat' in line:
+            if flat_model is not None and not counterexample_is_real(stdout, vnnlib_path, flat_model, T):
+                return 'unknown'
+            return 'sat'
+        if 'unknown' in line:
+            return 'unknown'
+    return 'unknown'
+
+
+def _run_abcrown(onnx_path, vnnlib_path, flat_model, T):
+    """Invoke alpha-beta-CROWN and return 'unsat', 'sat', or 'unknown'.
+
+    alpha-beta-CROWN writes its result to a file rather than stdout. The first
+    line of that file is the VNN-COMP verdict; if 'sat' the remainder contains
+    the counterexample in the same ((X_i v)...) format, which we validate with
+    counterexample_is_real for consistency.
+    """
+    import tempfile
+    if not os.path.isfile(config.ABCROWN_PYTHON):
+        print(f"  [abcrown] venv not found at {config.ABCROWN_PYTHON} — returning unknown")
+        return 'unknown'
+    results_file = None
+    try:
+        fd, results_file = tempfile.mkstemp(suffix='.txt')
+        os.close(fd)
+        cmd = [config.ABCROWN_PYTHON, config.ABCROWN_SCRIPT,
+               '--config', config.ABCROWN_CONFIG,
+               '--onnx_path', onnx_path,
+               '--vnnlib_path', vnnlib_path,
+               '--results_file', results_file,
+               '--timeout', '120',
+               '--save_adv_example']
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        try:
+            proc.wait(timeout=130)
+        except subprocess.TimeoutExpired:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.wait()
+            return 'unknown'
+        with open(results_file) as f:
+            content = f.read()
+        first = content.strip().splitlines()[0].strip().lower() if content.strip() else ''
+        if first == 'unsat':
+            return 'unsat'
+        if first == 'sat':
+            if flat_model is not None and not counterexample_is_real(content, vnnlib_path, flat_model, T):
+                return 'unknown'
+            return 'sat'
+        return 'unknown'
+    except Exception:
+        return 'unknown'
+    finally:
+        if results_file and os.path.exists(results_file):
+            os.unlink(results_file)
+
+
 def run_verifier(onnx_path, vnnlib_path, flat_model=None, T=None):
-    """Invoke the n2v verifier and return its verdict.
+    """Invoke the configured verifier and return its verdict.
+
+    Dispatches to alpha-beta-CROWN when ABCROWN is True, otherwise n2v.
+    n2v uses a cgroup RSS cap to prevent exact-star memory blowup from
+    killing the WSL VM; alpha-beta-CROWN manages its own GPU memory and
+    does not need the cap.
 
     Args:
         onnx_path:   path to the exported flat regression ONNX.
         vnnlib_path: path to the VNN-LIB property file.
-        flat_model:  if provided, a reported 'sat' is only accepted after its
-                     counterexample is re-evaluated through this model and shown
-                     to genuinely violate the property; otherwise it is
-                     downgraded to 'unknown'. This guards against an unsound
-                     witness-free 'sat' from the over-approximating reachability.
+        flat_model:  if provided, a reported 'sat' is validated by re-evaluating
+                     the counterexample through this model. Guards against
+                     unsound witness-free sat from over-approximating reachability.
         T:           window length (needed to reshape the counterexample).
 
     Returns:
-        'unsat', 'sat', or 'unknown'.  Returns 'unknown' on crash or no match,
-        which is the conservative/sound choice for certification purposes.
+        'unsat', 'sat', or 'unknown'.
     """
     try:
+        if ABCROWN:
+            return _run_abcrown(onnx_path, vnnlib_path, flat_model, T)
+        # n2v path (default)
         # Cap the verifier's *resident* memory (5 GB) via a transient systemd
         # cgroup scope so an exact-star blowup at large epsilon OOM-kills only
         # this scope, not the whole WSL VM. We use cgroups rather than
@@ -355,37 +455,9 @@ def run_verifier(onnx_path, vnnlib_path, flat_model=None, T=None):
         # the blowup from thrashing into swap before the kill. start_new_session
         # keeps systemd-run + python a single process group so the SIGKILL-on-
         # timeout path below tears down the whole group.
-        cmd = ['systemd-run', '--user', '--scope', '--quiet',
-               '-p', 'MemoryMax=5G', '-p', 'MemorySwapMax=0',
-               'python3', RUN_INSTANCE, onnx_path, vnnlib_path, '--workers', '1']
-        if APPROX_ONLY:
-            cmd.extend(['--category', 'collins_rul_cnn_2022'])
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-            start_new_session=True,
-        )
-        try:
-            stdout, _ = proc.communicate(timeout=120)
-        except subprocess.TimeoutExpired:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            proc.communicate()
-            return 'unknown'
-        for line in reversed(stdout.splitlines()):
-            line = line.strip()
-            if not line:
-                continue
-            if 'unsat' in line:
-                return 'unsat'
-            if 'sat' in line:
-                if flat_model is not None and not counterexample_is_real(stdout, vnnlib_path, flat_model, T):
-                    return 'unknown'
-                return 'sat'
-            if 'unknown' in line:
-                return 'unknown'
+        return _run_n2v(onnx_path, vnnlib_path, flat_model, T)
     except Exception:
-        pass
-    return 'unknown'
+        return 'unknown'
 
 
 def binary_search_epsilon(flat_model, T, prop_name):
@@ -488,9 +560,13 @@ def run_fold(fold, T):
     print(f"    verdicts:   noise={verdicts['noise']}  monotonicity={verdicts['monotonicity']}  "
           f"segmentation={verdicts['segmentation']}  range={verdicts['range']}")
 
-    eps_noise = binary_search_epsilon(flat, T, 'noise')
-    eps_range = binary_search_epsilon(flat, T, 'range')
-    print(f"    certified:  eps[noise]={eps_noise:.6f}  eps[range]={eps_range:.6f}")
+    if RUN_SEARCH:
+        eps_noise = binary_search_epsilon(flat, T, 'noise')
+        eps_range = binary_search_epsilon(flat, T, 'range')
+        print(f"    certified:  eps[noise]={eps_noise:.6f}  eps[range]={eps_range:.6f}")
+    else:
+        eps_noise = eps_range = None
+        print(f"    certified:  (binary search skipped via --no-search)")
 
     return {
         'fold': fold,
@@ -525,26 +601,35 @@ def write_results_table(results):
                      f"{r['v_expert']:>9.4f} | {r['v_novice']:>9.4f} | {r['L']:>8.4f} | {sep:>8}")
     lines.append("")
 
+    searched = any(r['eps_noise'] is not None for r in results)
+
     v_hdr = (f"{'Fold':<4} | {'noise':<7} | {'mono':<7} | {'seg':<7} | {'range':<7} | "
              f"{'eps[noise]':>11} | {'eps[range]':>11}")
     lines.append(v_hdr)
     lines.append("-" * len(v_hdr))
     for r in results:
         v = r['verdicts']
+        en = f"{r['eps_noise']:>11.6f}" if r['eps_noise'] is not None else f"{'skipped':>11}"
+        er = f"{r['eps_range']:>11.6f}" if r['eps_range'] is not None else f"{'skipped':>11}"
         lines.append(f"{r['fold']:<4} | {v['noise']:<7} | {v['monotonicity']:<7} | {v['segmentation']:<7} | "
-                     f"{v['range']:<7} | {r['eps_noise']:>11.6f} | {r['eps_range']:>11.6f}")
+                     f"{v['range']:<7} | {en} | {er}")
     lines.append("")
 
-    en = [r['eps_noise'] for r in results]
-    er = [r['eps_range'] for r in results]
-    lines.append(f"certified eps[noise]: mean={statistics.mean(en):.6f}  min={min(en):.6f}  "
-                 f"max={max(en):.6f}  (mean = {statistics.mean(en) / EPSILON_PHYSICAL:.1f}x physical)")
-    lines.append(f"certified eps[range]: mean={statistics.mean(er):.6f}  min={min(er):.6f}  "
-                 f"max={max(er):.6f}  (mean = {statistics.mean(er) / EPSILON_PHYSICAL:.1f}x physical)")
+    if searched:
+        en = [r['eps_noise'] for r in results]
+        er = [r['eps_range'] for r in results]
+        lines.append(f"certified eps[noise]: mean={statistics.mean(en):.6f}  min={min(en):.6f}  "
+                     f"max={max(en):.6f}  (mean = {statistics.mean(en) / EPSILON_PHYSICAL:.1f}x physical)")
+        lines.append(f"certified eps[range]: mean={statistics.mean(er):.6f}  min={min(er):.6f}  "
+                     f"max={max(er):.6f}  (mean = {statistics.mean(er) / EPSILON_PHYSICAL:.1f}x physical)")
+    else:
+        lines.append("certified eps: binary search skipped (--no-search) — verdicts at physical epsilon only")
 
-    t_suffix = f"_T{T}" if T != config.T_REGRESSION else ""
-    approx_suffix = "_approx" if APPROX_ONLY else ""
-    out_path = f'{RESULTS_DIR}/regression_results{t_suffix}{approx_suffix}.txt'
+    t_suffix        = f"_T{T}" if T != config.T_REGRESSION else ""
+    method_suffix   = "_approx" if APPROX_ONLY else ""
+    verifier_suffix = "_abcrown" if ABCROWN else ""
+    search_suffix   = "" if searched else "_verdicts"
+    out_path = f'{RESULTS_DIR}/regression_results{t_suffix}{method_suffix}{verifier_suffix}{search_suffix}.txt'
     text = "\n".join(lines)
     print("\n" + text)
     os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -561,13 +646,19 @@ def main():
         generate          legacy: write the 4 files for the single all-data model
         search            legacy: binary-search the single all-data model
     """
-    global T, APPROX_ONLY
+    global T, APPROX_ONLY, ABCROWN, RUN_SEARCH
     args = sys.argv[1:]
 
-    # Extract --approx and --T N flags before positional mode parsing.
+    # Extract flag arguments before positional mode parsing.
     APPROX_ONLY = '--approx' in args
     if APPROX_ONLY:
         args.remove('--approx')
+    ABCROWN = '--abcrown' in args
+    if ABCROWN:
+        args.remove('--abcrown')
+    if '--no-search' in args:
+        RUN_SEARCH = False
+        args.remove('--no-search')
     if '--T' in args:
         idx = args.index('--T')
         T = int(args[idx + 1])

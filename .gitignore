@@ -4,7 +4,10 @@ claude-planning/
 data/
 *.pdf
 n2v/
+alpha-beta-CROWN/
+envs/
 *.pth
 *.onnx
 *.onnx.data
 *.vnnlib
+*.vnnlib.compiled
