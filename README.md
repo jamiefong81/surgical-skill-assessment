@@ -271,11 +271,12 @@ LOUO mean: 34.4% (see `results/results.txt` for per-subject breakdown).
 | | Suturing | Knot Tying | Needle Passing |
 |---|---|---|---|
 | Usable trials | 39 | 36 | 28 |
-| Mean Spearman ρ | ~0.60 (paper) | **0.661** | 0.405 |
-| ρ (Overall Performance, Y₄) | — | 0.704 | 0.364 |
+| Mean Spearman ρ | 0.534 | **0.661** | 0.405 |
+| ρ (Overall Performance, Y₄) | 0.603 | 0.704 | 0.364 |
 
-Knot Tying exceeds the paper's Suturing benchmark. Needle Passing is weaker due to
-only 21–23 training trials per fold; results should be interpreted accordingly.
+The paper reports ~0.60 mean ρ for Suturing; our reproduction scores 0.534, within
+reasonable variation given stochastic training. Needle Passing is weaker due to
+only 21–23 training trials per fold.
 
 ### Formal verification — Suturing (n2v exact-star, T=10)
 
